@@ -5,11 +5,11 @@ Uses the official OpenAI API instead of going through OpenRouter.
 Requires OPENAI_API_KEY environment variable.
 """
 
-import os
-from typing import Optional
-from langchain_openai import ChatOpenAI
-from langchain_core.language_models.chat_models import BaseChatModel
 import logging
+import os
+
+from langchain_core.language_models.chat_models import BaseChatModel
+from langchain_openai import ChatOpenAI
 
 from .base_provider import BaseLLMProvider
 from ..model_mapper import ModelMapper
@@ -57,7 +57,6 @@ class OpenAIProvider(BaseLLMProvider):
 
         logger.info(f"Creating OpenAI chat model: {native_model}")
 
-        # Build configuration for direct OpenAI access
         config = {
             "model": native_model,
             "temperature": temperature,
@@ -65,8 +64,6 @@ class OpenAIProvider(BaseLLMProvider):
             "request_timeout": 120.0,
             "max_retries": 3,
         }
-
-        # Add any additional kwargs
         config.update(kwargs)
 
         return ChatOpenAI(**config)
@@ -85,6 +82,8 @@ class OpenAIProvider(BaseLLMProvider):
         Returns:
             True if this is an OpenAI model
         """
+        if "/" in model:
+            return model.split("/")[0] == "openai"
         return ModelMapper.is_model_supported_by_provider(model, 'openai')
 
     def get_native_model_name(self, model: str) -> str:

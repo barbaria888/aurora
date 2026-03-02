@@ -31,9 +31,18 @@ class ChatContextManager:
         "anthropic/claude-sonnet-4.5": 950000,  # 1M - 50K buffer
         "anthropic/claude-opus-4.5": 180000,  # 200K - 20K buffer
         "anthropic/claude-3-haiku": 180000,  # 200K - 20K buffer
-        "google/gemini-3-pro-preview": 1000000,  # 1M context
+        "google/gemini-3.1-pro-preview": 1000000,  # 1M context
         # Default fallback
         "default": 7000,  # Conservative 8K - 1K buffer
+    }
+
+    # Provider-based default limits for models not in MODEL_CONTEXT_LIMITS
+    PROVIDER_DEFAULT_LIMITS = {
+        "openai": 120000,
+        "anthropic": 180000,
+        "google": 1000000,
+        "vertex": 1000000,
+        "ollama": 8000,
     }
 
     @classmethod
@@ -53,6 +62,13 @@ class ChatContextManager:
         base_model = model_name.split(".")[0].split("-v")[0]
         if base_model in cls.MODEL_CONTEXT_LIMITS:
             return cls.MODEL_CONTEXT_LIMITS[base_model]
+
+        # Try provider-based default before falling back to 7K
+        if "/" in model_name:
+            provider_prefix = model_name.split("/")[0]
+            if provider_prefix in cls.PROVIDER_DEFAULT_LIMITS:
+                logger.info(f"Using provider default context limit for {model_name} (provider={provider_prefix})")
+                return cls.PROVIDER_DEFAULT_LIMITS[provider_prefix]
 
         # Use default
         logger.warning(f"Unknown model {model_name}, using default context limit")

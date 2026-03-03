@@ -109,15 +109,20 @@ LLM_PROVIDER_MODE=openrouter   # for OPENROUTER_API_KEY (default)
 LLM_PROVIDER_MODE=direct       # for direct provider keys (Anthropic, OpenAI, etc.)
 ```
 
-**VM URLs** — replace `YOUR_VM_IP` with your VM's public IP:
+**VM URLs** — replace `YOUR_VM_IP` with your VM's public IP (or internal/VPN IP — see note below):
 
 ```bash
 FRONTEND_URL=http://YOUR_VM_IP:3000
 NEXT_PUBLIC_BACKEND_URL=http://YOUR_VM_IP:5080
 NEXT_PUBLIC_WEBSOCKET_URL=ws://YOUR_VM_IP:5006
+SEARXNG_BASE_URL=http://YOUR_VM_IP:8082
 ```
 
 Leave `BACKEND_URL=http://aurora-server:5080` as-is — that's for internal container-to-container communication.
+
+:::tip Private/Internal Network
+If accessing via VPN, private subnet, or reverse proxy, use that IP/hostname instead of the public IP (e.g., `10.8.0.1` for a WireGuard tunnel, `192.168.x.x` for a private subnet, `https://aurora.internal` for a reverse proxy). `BACKEND_URL` always stays as the internal Docker name regardless.
+:::
 
 Save and exit (`Ctrl+X`, `Y`, `Enter` in nano).
 
@@ -301,7 +306,7 @@ docker restart aurora-vault-init
 Cloud provider ephemeral IPs change when the VM is stopped and restarted. Update `.env` with the new IP and recreate the frontend:
 
 ```bash
-nano .env   # update FRONTEND_URL, NEXT_PUBLIC_BACKEND_URL, NEXT_PUBLIC_WEBSOCKET_URL
+nano .env   # update FRONTEND_URL, NEXT_PUBLIC_BACKEND_URL, NEXT_PUBLIC_WEBSOCKET_URL, SEARXNG_BASE_URL
 docker compose -f docker-compose.prod-local.yml up -d frontend
 ```
 

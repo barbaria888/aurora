@@ -21,12 +21,19 @@ _GEMINI_THINKING_INDICATORS = (
     "3-pro", "3-flash",
 )
 
+# Models that accept the thinking_level parameter (preview/experimental only).
+# GA models like gemini-2.5-pro think by default but reject thinking_level.
+_GEMINI_THINKING_LEVEL_INDICATORS = (
+    "preview", "exp",
+)
+
 
 def apply_gemini_thinking_config(config: dict, model_name: str) -> None:
     """Apply thinking mode configuration for Gemini models that support it.
 
-    Mutates the config dict in place to add `include_thoughts` and `thinking_level`
-    when the model supports thinking and it is not disabled via env var.
+    Mutates the config dict in place to add `include_thoughts` and optionally
+    `thinking_level` when the model supports thinking and it is not disabled
+    via env var.
 
     Args:
         config: Model configuration dict to update.
@@ -39,13 +46,19 @@ def apply_gemini_thinking_config(config: dict, model_name: str) -> None:
         logger.info(f"Thinking mode disabled via GEMINI_DISABLE_THINKING for {model_name}")
         return
 
+    name_lower = model_name.lower()
     is_thinking_model = any(
-        indicator in model_name.lower() for indicator in _GEMINI_THINKING_INDICATORS
+        indicator in name_lower for indicator in _GEMINI_THINKING_INDICATORS
     )
     if is_thinking_model:
         config["include_thoughts"] = True
-        config["thinking_level"] = "high"
-        logger.info(f"Enabled thinking mode for {model_name}")
+        # Only set thinking_level for preview/experimental models.
+        # GA models (e.g. gemini-2.5-pro) think by default but reject this param.
+        if any(ind in name_lower for ind in _GEMINI_THINKING_LEVEL_INDICATORS):
+            config["thinking_level"] = "high"
+            logger.info(f"Enabled thinking mode (level=high) for {model_name}")
+        else:
+            logger.info(f"Enabled thinking mode (default level) for {model_name}")
 
 
 class BaseLLMProvider(ABC):

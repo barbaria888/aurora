@@ -16,3 +16,7 @@ export const isOvhEnabled = () => {
 export const isScalewayEnabled = () => {
   return getEnv('NEXT_PUBLIC_ENABLE_SCALEWAY') === 'true';
 };
+
+export const isSharePointEnabled = () => {
+  return getEnv('NEXT_PUBLIC_ENABLE_SHAREPOINT') === 'true';
+};

@@ -283,6 +283,12 @@ app.register_blueprint(knowledge_base_bp, url_prefix="/api/knowledge-base")
 from routes.confluence import bp as confluence_bp  # noqa: F401
 app.register_blueprint(confluence_bp, url_prefix="/confluence")
 
+# --- SharePoint Integration Routes ---
+from utils.flags.feature_flags import is_sharepoint_enabled
+if is_sharepoint_enabled():
+    from routes.sharepoint import bp as sharepoint_bp  # noqa: F401
+    app.register_blueprint(sharepoint_bp, url_prefix="/sharepoint")
+
 # --- Bitbucket Integration Routes ---
 from routes.bitbucket.bitbucket import bitbucket_bp
 from routes.bitbucket.bitbucket_browsing import bitbucket_browsing_bp

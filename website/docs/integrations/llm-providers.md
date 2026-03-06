@@ -50,18 +50,32 @@ Vertex AI and Ollama always use their native SDKs regardless of `LLM_PROVIDER_MO
 
 | Provider | Model | Notes |
 |----------|-------|-------|
-| **OpenAI** | `openai/gpt-4o` | Best for complex investigations |
-| | `openai/gpt-4o-mini` | Faster, lower cost |
-| | `openai/gpt-5.2` | Latest generation |
-| **Anthropic** | `anthropic/claude-opus-4.5` | Most capable |
+| **OpenAI** | `openai/gpt-5.4` | Latest flagship, 1M context |
+| | `openai/gpt-5.2` | Previous flagship |
+| | `openai/o3` | Strong reasoning model |
+| | `openai/o4-mini` | Fast reasoning, lower cost |
+| | `openai/o3-mini` | Compact reasoning model |
+| | `openai/gpt-4.1` | Reliable all-rounder |
+| | `openai/gpt-4.1-mini` | Fast and affordable |
+| | `openai/gpt-4o` | Multimodal (text + vision) |
+| | `openai/gpt-4o-mini` | Cheapest OpenAI option |
+| **Anthropic** | `anthropic/claude-opus-4.6` | Most capable, 1M context |
+| | `anthropic/claude-sonnet-4.6` | Near Opus quality at lower cost |
+| | `anthropic/claude-opus-4.5` | Previous generation flagship |
 | | `anthropic/claude-sonnet-4.5` | Balanced quality and speed |
-| | `anthropic/claude-3-haiku` | Fast and cost-effective (default RCA model) |
-| **Google Gemini** | `google/gemini-2.5-pro` | Best for complex tasks |
-| | `google/gemini-2.5-flash` | Fast and cost-effective |
-| | `google/gemini-3.1-pro-preview` | Latest generation with thinking |
-| **Vertex AI** | `vertex/gemini-2.5-pro` | Same models via Google Cloud |
-| | `vertex/gemini-2.5-flash` | Enterprise-grade with IAM auth |
-| | `vertex/gemini-3.1-pro-preview` | Latest generation with thinking |
+| | `anthropic/claude-haiku-4.5` | Fast, affordable |
+| | `anthropic/claude-3.5-sonnet` | Widely used, reliable |
+| | `anthropic/claude-3-haiku` | Cheapest (default RCA model) |
+| **Google Gemini** | `google/gemini-3.1-pro-preview` | Latest flagship with thinking |
+| | `google/gemini-3-flash` | Fast, outperforms 2.5 Pro |
+| | `google/gemini-2.5-pro` | Strong for complex tasks |
+| | `google/gemini-2.5-flash` | Cost-effective |
+| | `google/gemini-2.5-flash-lite` | Cheapest Gemini option |
+| **Vertex AI** | `vertex/gemini-3.1-pro-preview` | Latest flagship with thinking |
+| | `vertex/gemini-3-flash` | Fast, enterprise-grade |
+| | `vertex/gemini-2.5-pro` | Strong for complex tasks |
+| | `vertex/gemini-2.5-flash` | Cost-effective with IAM auth |
+| | `vertex/gemini-2.5-flash-lite` | Cheapest Vertex option |
 | **Ollama** | `ollama/llama3.1` | Meta's Llama 3.1 (8B/70B) |
 | | `ollama/qwen2.5` | Alibaba's Qwen 2.5 (various sizes) |
 | | Any model via `ollama pull` | |

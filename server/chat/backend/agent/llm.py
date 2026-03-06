@@ -22,27 +22,27 @@ class ModelConfig:
     """
     
     # Primary models for chat and operations
-    MAIN_MODEL = "anthropic/claude-sonnet-4.5"
-    VISION_MODEL = "anthropic/claude-sonnet-4.5"
-    
+    MAIN_MODEL = "anthropic/claude-sonnet-4.6"
+    VISION_MODEL = "anthropic/claude-sonnet-4.6"
+
     # Background RCA model - configurable via RCA_MODEL env var, falls back to cost-based selection
     RCA_MODEL = os.getenv("RCA_MODEL") or (
-        "anthropic/claude-3-haiku" if os.getenv("RCA_OPTIMIZE_COSTS", "true").lower() == "true"
-        else "anthropic/claude-opus-4.5"
+        "anthropic/claude-haiku-4.5" if os.getenv("RCA_OPTIMIZE_COSTS", "true").lower() == "true"
+        else "anthropic/claude-opus-4.6"
     )
-    
+
     # Summarization models
-    INCIDENT_REPORT_SUMMARIZATION_MODEL = "anthropic/claude-sonnet-4.5"  # For incident reports and chat context
-    TOOL_OUTPUT_SUMMARIZATION_MODEL = "anthropic/claude-sonnet-4.5"  # For summarizing large tool outputs to reduce token usage
-    
+    INCIDENT_REPORT_SUMMARIZATION_MODEL = "anthropic/claude-sonnet-4.6"  # For incident reports and chat context
+    TOOL_OUTPUT_SUMMARIZATION_MODEL = "anthropic/claude-sonnet-4.6"  # For summarizing large tool outputs to reduce token usage
+
     # Visualization extraction model - always use Sonnet for reliable structured output
-    VISUALIZATION_MODEL = "anthropic/claude-sonnet-4.5"
-    
+    VISUALIZATION_MODEL = "anthropic/claude-sonnet-4.6"
+
     # Suggestion extraction
-    SUGGESTION_MODEL = "anthropic/claude-sonnet-4.5"
+    SUGGESTION_MODEL = "anthropic/claude-sonnet-4.6"
     
     # Email report generation
-    EMAIL_REPORT_MODEL = "anthropic/claude-sonnet-4.5"
+    EMAIL_REPORT_MODEL = "anthropic/claude-sonnet-4.6"
 
 
 class LLMManager:

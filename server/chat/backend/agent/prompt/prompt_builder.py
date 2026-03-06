@@ -1751,9 +1751,9 @@ def build_background_mode_segment(state: Optional[Any]) -> str:
             "YOU MUST make 15-20+ tool calls. After EACH tool call, continue investigating.",
         ])
 
-        # OpenAI models don't produce text between tool calls unless instructed to
+        # Non-Anthropic models often don't produce text between tool calls unless instructed to
         model_name = (getattr(state, 'model', '') or '').lower()
-        if model_name.startswith("openai/"):
+        if model_name and not model_name.startswith("anthropic/"):
             parts.extend([
                 "THINK OUT LOUD: Before each tool call, briefly state what you're investigating and why (1-2 sentences).",
                 "After each tool result, briefly state your findings before the next tool call.",

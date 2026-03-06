@@ -183,7 +183,7 @@ docker logs vault-init 2>&1 | grep "Root Token:"
 
 ## LLM & AI Services
 
-At least one LLM provider API key is required.
+At least one LLM provider API key is required. See [LLM Providers](/docs/integrations/llm-providers) for detailed setup instructions.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -191,7 +191,7 @@ At least one LLM provider API key is required.
 | `OPENAI_API_KEY` | - | OpenAI API key |
 | `ANTHROPIC_API_KEY` | - | Anthropic API key |
 | `GOOGLE_AI_API_KEY` | - | Google AI API key |
-| `LLM_PROVIDER_MODE` | `openrouter` | Default LLM provider |
+| `LLM_PROVIDER_MODE` | `openrouter` | LLM routing mode: `openrouter` or `direct` |
 | `AGENT_RECURSION_LIMIT` | `240` | Max agent reasoning steps |
 
 ```bash
@@ -203,6 +203,30 @@ GOOGLE_AI_API_KEY=your-key
 
 LLM_PROVIDER_MODE=openrouter
 AGENT_RECURSION_LIMIT=240
+```
+
+### Vertex AI (Google Cloud)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `VERTEX_AI_PROJECT` | - | Google Cloud project ID |
+| `VERTEX_AI_LOCATION` | `global` | Vertex AI location |
+| `VERTEX_AI_SERVICE_ACCOUNT_JSON` | - | Service account key JSON string |
+
+```bash
+VERTEX_AI_PROJECT=my-gcp-project
+VERTEX_AI_LOCATION=global
+VERTEX_AI_SERVICE_ACCOUNT_JSON={"type":"service_account",...}
+```
+
+### Ollama (Local Models)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `OLLAMA_BASE_URL` | `http://host.docker.internal:11434` | Ollama server URL |
+
+```bash
+OLLAMA_BASE_URL=http://host.docker.internal:11434
 ```
 
 ### Web Search
@@ -218,7 +242,8 @@ AGENT_RECURSION_LIMIT=240
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `RCA_OPTIMIZE_COSTS` | `false` | Use cheaper models when possible |
+| `RCA_MODEL` | `anthropic/claude-3-haiku` | Model for background RCA (format: `provider/model`) |
+| `RCA_OPTIMIZE_COSTS` | `true` | Use cheaper models for RCA when `RCA_MODEL` is not set |
 | `GEMINI_DISABLE_THINKING` | - | Disable Gemini thinking mode |
 
 ## Cloud Providers

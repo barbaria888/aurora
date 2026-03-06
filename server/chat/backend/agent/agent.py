@@ -10,6 +10,28 @@ from chat.backend.agent.utils.state import State
 from chat.backend.agent.utils.tool_context_capture import ToolContextCapture
 from langchain_openai import ChatOpenAI
 from .tools.cloud_tools import set_websocket_context
+
+
+class _ReasoningChatOpenAI(ChatOpenAI):
+    """ChatOpenAI subclass that captures OpenRouter reasoning fields.
+
+    OpenRouter returns reasoning content in delta.reasoning / delta.reasoning_details,
+    but LangChain's _convert_delta_to_message_chunk ignores these fields. This subclass
+    captures them and puts reasoning into additional_kwargs["reasoning_content"] so that
+    workflow.py's streaming code can forward it to the ThoughtsPanel.
+    """
+
+    def _convert_chunk_to_generation_chunk(self, chunk, default_chunk_class, base_generation_info):
+        result = super()._convert_chunk_to_generation_chunk(chunk, default_chunk_class, base_generation_info)
+        if result is None:
+            return None
+        choices = chunk.get("choices") or chunk.get("chunk", {}).get("choices") or []
+        if choices:
+            delta = choices[0].get("delta") or {}
+            reasoning = delta.get("reasoning")
+            if reasoning and hasattr(result.message, "additional_kwargs"):
+                result.message.additional_kwargs["reasoning_content"] = reasoning
+        return result
 from chat.backend.agent.utils.prefix_cache import PrefixCacheManager
 from chat.backend.agent.prompt.prompt_builder import build_prompt_segments, assemble_system_prompt, register_prompt_cache_breakpoints
 from chat.backend.agent.utils.llm_usage_tracker import LLMUsageTracker, LLMUsage
@@ -18,7 +40,7 @@ import asyncio
 
 # Providers that must use their native SDKs even when LLM_PROVIDER_MODE=openrouter,
 # because features like Gemini thinking only work with their native SDK.
-_DIRECT_ONLY_PROVIDERS = frozenset({"google", "vertex", "ollama"})
+_DIRECT_ONLY_PROVIDERS = frozenset({"vertex", "ollama"})
 
 class Agent:
     def __init__(self, weaviate_client: WeaviateClient, postgres_client: PostgreSQLClient, websocket_sender=None, event_loop=None, ctx_len=10):
@@ -443,7 +465,7 @@ class Agent:
 
                 openrouter_model_name = ModelMapper.get_native_name(model_name, "openrouter")
 
-                # Enable reasoning for OpenAI models via OpenRouter's reasoning param
+                # Enable reasoning via OpenRouter's unified reasoning param
                 openrouter_model_kwargs = {}
                 if detected_provider == "openai":
                     from chat.backend.agent.providers.openai_provider import OpenAIProvider
@@ -451,8 +473,11 @@ class Agent:
                     if OpenAIProvider._supports_reasoning(native):
                         openrouter_model_kwargs["extra_body"] = {"reasoning": {"effort": "high"}}
                         logging.info(f"Enabled reasoning effort=high for {openrouter_model_name} via OpenRouter")
+                elif detected_provider == "google":
+                    openrouter_model_kwargs["extra_body"] = {"reasoning": {"effort": "high"}}
+                    logging.info(f"Enabled reasoning effort=high for {openrouter_model_name} via OpenRouter")
 
-                streaming_llm = ChatOpenAI(
+                streaming_llm = _ReasoningChatOpenAI(
                     model=openrouter_model_name,
                     temperature=self.llm_manager.main_llm.temperature,
                     streaming=True,

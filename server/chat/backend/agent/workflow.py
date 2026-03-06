@@ -773,8 +773,6 @@ class Workflow:
                     if chunk_obj:
                         content = ""
                         if hasattr(chunk_obj, 'content') and chunk_obj.content:
-                            if _token_count <= 3:
-                                logger.debug(f"[STREAM DEBUG] Token #{_token_count} raw content type={type(chunk_obj.content).__name__}, value={str(chunk_obj.content)[:200]}")
                             # Extract text content (handles Gemini thinking model list format)
                             # include_thinking=True so reasoning flows to save_incident_thought() for RCA
                             content = _extract_text_from_content(chunk_obj.content, include_thinking=True)

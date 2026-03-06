@@ -303,7 +303,9 @@ def initialize_tables():
                         provider VARCHAR(50) NOT NULL,
                         account_id VARCHAR(255) NOT NULL,
                         role_arn VARCHAR(512),
+                        read_only_role_arn VARCHAR(512),
                         connection_method VARCHAR(50),
+                        region VARCHAR(50),
                         status VARCHAR(20) DEFAULT 'active', -- active | not_connected | error
                         last_verified_at TIMESTAMP,
                         UNIQUE(user_id, provider, account_id)
@@ -764,6 +766,29 @@ def initialize_tables():
                     CREATE INDEX IF NOT EXISTS idx_dynatrace_problems_state ON dynatrace_problems(problem_state);
                     CREATE INDEX IF NOT EXISTS idx_dynatrace_problems_received_at ON dynatrace_problems(received_at DESC);
                 """,
+                "bigpanda_events": """
+                    CREATE TABLE IF NOT EXISTS bigpanda_events (
+                        id SERIAL PRIMARY KEY,
+                        user_id VARCHAR(255) NOT NULL,
+                        event_type VARCHAR(100),
+                        incident_id VARCHAR(255),
+                        incident_title TEXT,
+                        incident_status VARCHAR(50),
+                        incident_severity VARCHAR(100),
+                        primary_property VARCHAR(255),
+                        secondary_property VARCHAR(255),
+                        source_system VARCHAR(255),
+                        child_alert_count INTEGER DEFAULT 0,
+                        payload JSONB NOT NULL,
+                        received_at TIMESTAMP NOT NULL,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    );
+
+                    CREATE INDEX IF NOT EXISTS idx_bigpanda_events_user_id ON bigpanda_events(user_id, received_at DESC);
+                    CREATE INDEX IF NOT EXISTS idx_bigpanda_events_incident_id ON bigpanda_events(incident_id);
+                    CREATE INDEX IF NOT EXISTS idx_bigpanda_events_status ON bigpanda_events(incident_status);
+                    CREATE INDEX IF NOT EXISTS idx_bigpanda_events_received_at ON bigpanda_events(received_at DESC);
+                """,
                 "kubectl_agent_tokens": """
                     CREATE TABLE IF NOT EXISTS kubectl_agent_tokens (
                         id SERIAL PRIMARY KEY,
@@ -905,6 +930,7 @@ def initialize_tables():
             rls_tables.append("netdata_alerts")
             rls_tables.append("netdata_verification_tokens")
             rls_tables.append("splunk_alerts")
+            rls_tables.append("bigpanda_events")
             rls_tables.append("jenkins_deployment_events")
             rls_tables.append("dynatrace_problems")
 
@@ -997,6 +1023,39 @@ def initialize_tables():
                     f"Error ensuring read_only_role_arn column in user_connections: {e}"
                 )
                 conn.rollback()
+
+            # Add region column to user_connections for multi-account support
+            try:
+                cursor.execute(
+                    "ALTER TABLE user_connections ADD COLUMN IF NOT EXISTS region VARCHAR(50);"
+                )
+                conn.commit()
+                logging.info(
+                    "Ensured region column exists on user_connections table."
+                )
+            except Exception as e:
+                logging.error(
+                    "FATAL: Failed to ensure region column in user_connections: %s", e
+                )
+                conn.rollback()
+                raise
+
+            # Add workspace_id to user_connections so credential refresh can
+            # look up the external_id without a fragile JOIN through workspaces.
+            try:
+                cursor.execute(
+                    "ALTER TABLE user_connections ADD COLUMN IF NOT EXISTS workspace_id VARCHAR(255);"
+                )
+                conn.commit()
+                logging.info(
+                    "Ensured workspace_id column exists on user_connections table."
+                )
+            except Exception as e:
+                logging.error(
+                    "FATAL: Failed to ensure workspace_id column in user_connections: %s", e
+                )
+                conn.rollback()
+                raise
 
             # Add stateless migration columns to user_tokens if they don't exist
             try:

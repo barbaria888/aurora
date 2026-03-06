@@ -151,7 +151,7 @@ const logos = {
   dynatrace: (
     <img
       src="/dynatrace.png"
-      className="w-4 h-4 min-w-4 min-h-4 object-contain scale-[2.2]"
+      className="w-4 h-4 min-w-4 min-h-4 object-contain"
       alt="Dynatrace"
       onError={(e) => console.error('Failed to load Dynatrace logo:', e)}
     />
@@ -170,6 +170,14 @@ const logos = {
       className="w-4 h-4 min-w-4 min-h-4 object-contain"
       alt="Bitbucket"
       onError={(e) => console.error('Failed to load Bitbucket logo:', e)}
+    />
+  ),
+  sharepoint: (
+    <img
+      src="/sharepoint.png"
+      className="w-4 h-4 min-w-4 min-h-4 object-contain"
+      alt="SharePoint"
+      onError={(e) => console.error('Failed to load SharePoint logo:', e)}
     />
   ),
   web: (
@@ -270,6 +278,11 @@ const getLogoForCommand = (command: string | any, toolName: string, provider?: s
   // Bitbucket tools
   if (tool.startsWith('bitbucket_')) {
     return 'bitbucket'
+  }
+
+  // SharePoint tools
+  if (tool.startsWith('sharepoint_')) {
+    return 'sharepoint'
   }
 
   // IAC tools

@@ -258,19 +258,21 @@ def _build_provider_investigation_section(providers: List[str], user_id: Optiona
     if 'aws' in providers_lower:
         sections.append("""
 ## AWS/EKS Investigation:
-- Check cluster status: cloud_tool('aws', 'eks describe-cluster --name CLUSTER_NAME')
-- **IMPORTANT**: Get cluster credentials first: cloud_tool('aws', 'eks update-kubeconfig --name CLUSTER_NAME --region REGION')
-- Get pod details: cloud_tool('aws', 'kubectl get pods -n NAMESPACE -o wide')
-- Describe problematic pods: cloud_tool('aws', 'kubectl describe pod POD_NAME -n NAMESPACE')
-- Check pod logs: cloud_tool('aws', 'kubectl logs POD_NAME -n NAMESPACE --since=1h')
-- Check pod metrics: cloud_tool('aws', 'kubectl top pod POD_NAME -n NAMESPACE')
-- Check events: cloud_tool('aws', 'kubectl get events -n NAMESPACE --sort-by=.lastTimestamp')
-- Check node health: cloud_tool('aws', 'kubectl describe node NODE_NAME')
-- Query CloudWatch logs: cloud_tool('aws', 'logs filter-log-events --log-group-name LOG_GROUP --start-time TIMESTAMP')
-- Check EC2 instances: cloud_tool('aws', 'ec2 describe-instances --filters "Name=tag:Name,Values=*"')
-- Check CloudWatch metrics: cloud_tool('aws', 'cloudwatch get-metric-statistics --namespace AWS/EC2 --metric-name CPUUtilization')
-- Check load balancers: cloud_tool('aws', 'elbv2 describe-load-balancers')
-- Check security groups: cloud_tool('aws', 'ec2 describe-security-groups')""")
+IMPORTANT: If multiple AWS accounts are connected, your FIRST cloud_exec('aws', ...) call (without account_id) fans out to ALL accounts. Check `results_by_account` in the response.
+- Identify which account(s) have the issue based on the results.
+- For ALL subsequent calls, pass account_id='<ACCOUNT_ID>' to target only the relevant account. Example: cloud_exec('aws', 'ec2 describe-instances', account_id='123456789012')
+- Do NOT keep querying all accounts after you know where the problem is.
+- Check caller identity: cloud_tool('aws', 'sts get-caller-identity', account_id='<ACCOUNT_ID>')
+- Check cluster status: cloud_tool('aws', 'eks describe-cluster --name CLUSTER_NAME', account_id='<ACCOUNT_ID>')
+- **IMPORTANT**: Get cluster credentials first: cloud_tool('aws', 'eks update-kubeconfig --name CLUSTER_NAME --region REGION', account_id='<ACCOUNT_ID>')
+- Get pod details: cloud_tool('aws', 'kubectl get pods -n NAMESPACE -o wide', account_id='<ACCOUNT_ID>')
+- Describe problematic pods: cloud_tool('aws', 'kubectl describe pod POD_NAME -n NAMESPACE', account_id='<ACCOUNT_ID>')
+- Check pod logs: cloud_tool('aws', 'kubectl logs POD_NAME -n NAMESPACE --since=1h', account_id='<ACCOUNT_ID>')
+- Check events: cloud_tool('aws', 'kubectl get events -n NAMESPACE --sort-by=.lastTimestamp', account_id='<ACCOUNT_ID>')
+- Query CloudWatch logs: cloud_tool('aws', 'logs filter-log-events --log-group-name LOG_GROUP --start-time TIMESTAMP', account_id='<ACCOUNT_ID>')
+- Check EC2 instances: cloud_tool('aws', 'ec2 describe-instances --filters "Name=tag:Name,Values=*"', account_id='<ACCOUNT_ID>')
+- Check load balancers: cloud_tool('aws', 'elbv2 describe-load-balancers', account_id='<ACCOUNT_ID>')
+- Check security groups: cloud_tool('aws', 'ec2 describe-security-groups', account_id='<ACCOUNT_ID>')""")
 
     # Azure-specific instructions
     if 'azure' in providers_lower:
@@ -493,6 +495,8 @@ def build_rca_prompt(
         entity = alert_details.get('impacted_entity', 'unknown')
         impact = alert_details.get('impact', 'unknown')
         labels_str = f"entity={entity}, impact={impact}"
+    elif source == 'bigpanda':
+        labels_str = ", ".join(f"{k}={v}" for k, v in labels.items()) if labels else "none"
     else:
         labels_str = str(labels)
 
@@ -1062,3 +1066,50 @@ def build_cloudbees_rca_prompt(
         alert_details['labels']['trace_id'] = payload['trace_id']
 
     return build_rca_prompt('cloudbees', alert_details, providers, user_id)
+
+
+def build_bigpanda_rca_prompt(
+    incident: Dict[str, Any],
+    alerts: list,
+    providers: Optional[List[str]] = None,
+    user_id: Optional[str] = None,
+) -> str:
+    """Build RCA prompt from BigPanda incident payload."""
+    first_alert = alerts[0] if alerts else {}
+    title = (
+        first_alert.get("description")
+        or first_alert.get("condition_name")
+        or f"BigPanda Incident {incident.get('id', 'unknown')}"
+    )
+    service = str(
+        first_alert.get("primary_property")
+        or first_alert.get("source_system")
+        or "unknown"
+    )
+    bp_status = incident.get("status", "active")
+
+    message_parts = [f"Child alerts: {len(alerts)}"]
+    if envs := incident.get("environments"):
+        message_parts.append(f"Environments: {envs}")
+    if tags := incident.get("incident_tags"):
+        message_parts.append(f"Tags: {tags}")
+    if alerts:
+        summaries = []
+        for a in alerts[:5]:
+            desc = a.get("description") or a.get("condition_name") or "no description"
+            src = a.get("source_system") or "unknown"
+            summaries.append(f"[{src}] {desc}")
+        message_parts.append("Top alerts: " + "; ".join(summaries))
+
+    alert_details = {
+        'title': title,
+        'status': bp_status,
+        'message': ". ".join(message_parts),
+        'labels': {
+            'service': service,
+            'severity': incident.get("severity", "unknown"),
+            'child_alert_count': str(len(alerts)),
+        },
+    }
+
+    return build_rca_prompt('bigpanda', alert_details, providers, user_id)

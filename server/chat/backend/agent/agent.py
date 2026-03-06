@@ -10,6 +10,15 @@ from chat.backend.agent.utils.state import State
 from chat.backend.agent.utils.tool_context_capture import ToolContextCapture
 from langchain_openai import ChatOpenAI
 from .tools.cloud_tools import set_websocket_context
+from chat.backend.agent.utils.prefix_cache import PrefixCacheManager
+from chat.backend.agent.prompt.prompt_builder import build_prompt_segments, assemble_system_prompt, register_prompt_cache_breakpoints
+from chat.backend.agent.utils.llm_usage_tracker import LLMUsageTracker, LLMUsage
+import time
+import asyncio
+
+# Providers that must use their native SDKs even when LLM_PROVIDER_MODE=openrouter,
+# because features like Gemini thinking only work with their native SDK.
+_DIRECT_ONLY_PROVIDERS = frozenset({"vertex", "ollama"})
 
 
 class _ReasoningChatOpenAI(ChatOpenAI):
@@ -32,15 +41,6 @@ class _ReasoningChatOpenAI(ChatOpenAI):
             if reasoning and hasattr(result.message, "additional_kwargs"):
                 result.message.additional_kwargs["reasoning_content"] = reasoning
         return result
-from chat.backend.agent.utils.prefix_cache import PrefixCacheManager
-from chat.backend.agent.prompt.prompt_builder import build_prompt_segments, assemble_system_prompt, register_prompt_cache_breakpoints
-from chat.backend.agent.utils.llm_usage_tracker import LLMUsageTracker, LLMUsage
-import time
-import asyncio
-
-# Providers that must use their native SDKs even when LLM_PROVIDER_MODE=openrouter,
-# because features like Gemini thinking only work with their native SDK.
-_DIRECT_ONLY_PROVIDERS = frozenset({"vertex", "ollama"})
 
 class Agent:
     def __init__(self, weaviate_client: WeaviateClient, postgres_client: PostgreSQLClient, websocket_sender=None, event_loop=None, ctx_len=10):

@@ -254,8 +254,8 @@ OLLAMA_BASE_URL=http://host.docker.internal:11434
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `RCA_MODEL` | `anthropic/claude-3-haiku` | Model for background RCA (format: `provider/model`) |
-| `RCA_OPTIMIZE_COSTS` | `true` | Use cheaper models for RCA when `RCA_MODEL` is not set |
+| `RCA_MODEL` | - | Model for background RCA (format: `provider/model`). Overrides `RCA_OPTIMIZE_COSTS` when set. |
+| `RCA_OPTIMIZE_COSTS` | `true` | Only used when `RCA_MODEL` is not set. `true` = `anthropic/claude-3-haiku`, `false` = `anthropic/claude-opus-4.5` |
 | `GEMINI_DISABLE_THINKING` | - | Disable Gemini thinking mode |
 
 ## Cloud Providers

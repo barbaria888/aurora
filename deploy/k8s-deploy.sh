@@ -11,7 +11,7 @@ set -euo pipefail
 #   ./deploy/k8s-deploy.sh --skip-vault        # skip vault setup (already initialized)
 #   ./deploy/k8s-deploy.sh --values-only       # only generate values file, don't deploy
 #
-# Required tools: kubectl, helm, docker (with buildx), yq, openssl
+# Required tools: kubectl, helm, docker (with buildx), yq, openssl, python3
 # ─────────────────────────────────────────────────────────────────────────────
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -42,11 +42,11 @@ prompt() {
   local var="$1" msg="$2" default="${3:-}"
   if [[ -n "$default" ]]; then
     read -rp "$msg [$default]: " val
-    eval "$var=\"${val:-$default}\""
+    printf -v "$var" '%s' "${val:-$default}"
   else
     read -rp "$msg: " val
     while [[ -z "$val" ]]; do read -rp "$msg (required): " val; done
-    eval "$var=\"$val\""
+    printf -v "$var" '%s' "$val"
   fi
 }
 
@@ -57,7 +57,7 @@ warn() { echo -e "\033[1;33m!\033[0m $1"; }
 # ─── Preflight ───────────────────────────────────────────────────────────────
 
 info "Checking prerequisites..."
-for cmd in kubectl helm docker yq openssl; do
+for cmd in kubectl helm docker yq openssl python3; do
   command -v "$cmd" >/dev/null 2>&1 || { echo "Missing: $cmd"; exit 1; }
 done
 docker buildx version >/dev/null 2>&1 || { echo "Missing: docker buildx"; exit 1; }
@@ -78,7 +78,7 @@ echo ""
 if $LOCAL_MODE; then
   REGISTRY="localhost"
   IMAGE_TAG="local"
-  info "Local mode — images will be built locally (no push, no cross-compile)"
+  info "Local mode: images will be built locally (no push, no cross-compile)"
 
   # Auto-detect ingress IP or prompt
   DETECTED_IP=$(kubectl get svc -n ingress-nginx ingress-nginx-controller -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || true)
@@ -96,7 +96,7 @@ else
   prompt INGRESS_IP "Ingress controller external IP (run: kubectl get svc -n ingress-nginx ingress-nginx-controller)"
 
   echo ""
-  info "Storage — S3-compatible object storage"
+  info "Storage: S3-compatible object storage"
   prompt STORAGE_BUCKET "Bucket name"
   prompt STORAGE_ENDPOINT "Endpoint URL" "https://s3.amazonaws.com"
   prompt STORAGE_REGION "Region" "us-east-1"
@@ -139,7 +139,7 @@ yq -i ".config.FRONTEND_URL = \"http://aurora-oss.${INGRESS_IP}.nip.io\"" "$VALU
 yq -i ".config.SEARXNG_BASE_URL = \"http://aurora-oss.${INGRESS_IP}.nip.io\"" "$VALUES_FILE"
 
 if $LOCAL_MODE; then
-  # MinIO — built-in S3-compatible storage
+  # MinIO: built-in S3-compatible storage
   yq -i '.services.minio.enabled = true' "$VALUES_FILE"
   yq -i '.config.STORAGE_BUCKET = "aurora-storage"' "$VALUES_FILE"
   yq -i '.config.STORAGE_ENDPOINT_URL = ""' "$VALUES_FILE"
@@ -181,7 +181,7 @@ ok "Values file generated: $VALUES_FILE"
 ok "Image tag: $IMAGE_TAG"
 
 if $VALUES_ONLY; then
-  info "Values-only mode — stopping here."
+  info "Values-only mode: stopping here."
   exit 0
 fi
 
@@ -198,6 +198,14 @@ elif $LOCAL_MODE; then
   DOCKER_BUILDKIT=1 docker build "$REPO_ROOT/client" --target=prod --build-arg "NEXT_PUBLIC_BACKEND_URL=http://api.aurora-oss.${INGRESS_IP}.nip.io" --build-arg "NEXT_PUBLIC_WEBSOCKET_URL=ws://ws.aurora-oss.${INGRESS_IP}.nip.io" -t localhost/aurora-frontend:local
   ok "Frontend image built"
 else
+  # Verify registry credentials before building
+  info "Verifying registry credentials..."
+  if ! docker login "$REGISTRY" --get-login >/dev/null 2>&1; then
+    warn "Not logged in to $REGISTRY. Attempting login..."
+    docker login "$REGISTRY" || { echo "Registry login failed. Run 'docker login $REGISTRY' first."; exit 1; }
+  fi
+  ok "Registry credentials valid"
+
   info "Building aurora-server ($REGISTRY/aurora-server:$IMAGE_TAG) ..."
   DOCKER_BUILDKIT=1 docker buildx build "$REPO_ROOT/server" --target=prod --platform linux/amd64 --push -t "$REGISTRY/aurora-server:$IMAGE_TAG"
   ok "Server image pushed"
@@ -214,7 +222,9 @@ helm upgrade --install "$RELEASE" "$CHART_DIR" --namespace "$NAMESPACE" --create
 ok "Helm release deployed"
 
 info "Waiting for pods..."
-kubectl rollout status deployment -n "$NAMESPACE" --timeout=180s || true
+if ! kubectl rollout status deployment -n "$NAMESPACE" --timeout=180s; then
+  warn "Some deployments did not become ready within 180s. Check pod status below."
+fi
 kubectl get pods -n "$NAMESPACE"
 
 # ─── Vault setup ─────────────────────────────────────────────────────────────
@@ -223,17 +233,27 @@ if $SKIP_VAULT; then
   warn "Skipping vault setup (--skip-vault)"
 else
   info "Waiting for vault pod..."
-  kubectl wait --for=condition=ready=false pod/aurora-oss-vault-0 -n "$NAMESPACE" --timeout=60s 2>/dev/null || true
-  sleep 5
+  until kubectl get pod/aurora-oss-vault-0 -n "$NAMESPACE" &>/dev/null; do
+    echo "Waiting for Vault pod to be created..."
+    sleep 2
+  done
+  kubectl wait --for=condition=ContainersReady=false pod/aurora-oss-vault-0 -n "$NAMESPACE" --timeout=60s 2>/dev/null || true
+  sleep 3
 
   info "Initializing Vault..."
   VAULT_INIT=$(kubectl -n "$NAMESPACE" exec statefulset/aurora-oss-vault -- vault operator init -key-shares=1 -key-threshold=1 2>&1)
   UNSEAL_KEY=$(echo "$VAULT_INIT" | grep "Unseal Key 1:" | awk '{print $NF}')
   ROOT_TOKEN=$(echo "$VAULT_INIT" | grep "Initial Root Token:" | awk '{print $NF}')
   ok "Vault initialized"
-  echo "  Unseal Key:  $UNSEAL_KEY"
-  echo "  Root Token:  $ROOT_TOKEN"
-  warn "SAVE THESE — you need the unseal key after every vault restart"
+
+  CREDENTIALS_FILE="$REPO_ROOT/vault-init-${RELEASE}.txt"
+  (umask 077 && cat > "$CREDENTIALS_FILE" <<CEOF
+Unseal Key: $UNSEAL_KEY
+Root Token: $ROOT_TOKEN
+CEOF
+  )
+  warn "Vault credentials written to $CREDENTIALS_FILE (mode 600). Store securely and delete after use."
+  warn "You need the unseal key after every vault restart."
 
   info "Unsealing Vault..."
   kubectl -n "$NAMESPACE" exec statefulset/aurora-oss-vault -- vault operator unseal "$UNSEAL_KEY" >/dev/null 2>&1
@@ -250,12 +270,14 @@ path "aurora/metadata/users" { capabilities = ["list"] }
 EOF'
 
   APP_TOKEN=$(kubectl -n "$NAMESPACE" exec statefulset/aurora-oss-vault -- sh -c "export VAULT_ADDR=http://127.0.0.1:8200 && vault token create -policy=aurora-app -ttl=0 -format=json 2>/dev/null" | python3 -c "import sys,json; print(json.load(sys.stdin)['auth']['client_token'])")
-  ok "Vault configured — app token created"
+  ok "Vault configured: app token created"
 
   info "Updating values with Vault token and redeploying..."
   yq -i ".secrets.backend.VAULT_TOKEN = \"$APP_TOKEN\"" "$VALUES_FILE"
   helm upgrade "$RELEASE" "$CHART_DIR" --reset-values -f "$VALUES_FILE" -n "$NAMESPACE"
-  kubectl rollout status deployment -n "$NAMESPACE" --timeout=120s || true
+  if ! kubectl rollout status deployment -n "$NAMESPACE" --timeout=120s; then
+    warn "Some deployments did not become ready after Vault redeploy. Check pod status."
+  fi
   ok "Redeployed with Vault token"
 fi
 

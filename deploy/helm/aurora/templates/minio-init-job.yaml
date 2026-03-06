@@ -15,7 +15,7 @@ spec:
       restartPolicy: OnFailure
       containers:
         - name: minio-init
-          image: minio/mc:latest
+          image: minio/mc:RELEASE.2025-04-16T18-13-26Z
           command:
             - /bin/sh
             - -c
@@ -28,7 +28,13 @@ spec:
               echo "Bucket ready"
           env:
             - name: ACCESS_KEY
-              value: {{ .Values.secrets.backend.STORAGE_ACCESS_KEY | quote }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "aurora.fullname" . }}-secrets-backend
+                  key: STORAGE_ACCESS_KEY
             - name: SECRET_KEY
-              value: {{ .Values.secrets.backend.STORAGE_SECRET_KEY | quote }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "aurora.fullname" . }}-secrets-backend
+                  key: STORAGE_SECRET_KEY
 {{- end }}

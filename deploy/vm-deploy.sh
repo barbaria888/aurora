@@ -275,6 +275,19 @@ else
   LLM_PROVIDER_MODE="direct"
 fi
 
+# Validate required variables (catches silent empties from non-interactive prompt)
+if $NON_INTERACTIVE; then
+  _missing=()
+  [[ -z "${LLM_KEY:-}" ]]            && _missing+=("LLM_API_KEY")
+  [[ -z "${LLM_PROVIDER_INPUT:-}" ]] && _missing+=("LLM_PROVIDER")
+  [[ -z "${VM_HOSTNAME:-}" ]]        && _missing+=("hostname (use --hostname)")
+  if [[ ${#_missing[@]} -gt 0 ]]; then
+    err "Non-interactive mode requires the following variables: ${_missing[*]}"
+    err "Set them via environment or CLI flags before running with --non-interactive."
+    exit 1
+  fi
+fi
+
 # ─── Step 5: Generate .env ───────────────────────────────────────────────────
 
 echo ""

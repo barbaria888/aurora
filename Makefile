@@ -1,4 +1,4 @@
-.PHONY: help dev down logs rebuild-server restart prod prod-build prod-logs prod-down clean nuke build-no-cache dev-fresh prod-clean prod-nuke prod-build-no-cache prod-fresh prod-prebuilt prod-local init prod-local-logs prod-local-down prod-local-clean prod-local-nuke deploy-build deploy
+.PHONY: help dev down logs rebuild-server restart prod prod-build prod-logs prod-down clean nuke build-no-cache dev-fresh prod-clean prod-nuke prod-build-no-cache prod-fresh prod-prebuilt prod-local init prod-local-logs prod-local-down prod-local-clean prod-local-nuke deploy-build deploy package-airtight prod-airtight prod-airtight-logs vm-deploy
 
 help:
 	@echo "Available commands:"
@@ -34,6 +34,17 @@ help:
 	@echo "  make prod-local-clean   - Stop and remove production volumes"
 	@echo "  make prod-local-nuke    - Full cleanup: containers, volumes, images"
 	@echo ""
+	@echo "Airtight Deployment (restricted-egress / enterprise VMs):"
+	@echo "  make package-airtight    - Build all images and save to aurora-airtight-<version>.tar.gz"
+	@echo "                             Run this on a machine with internet access"
+	@echo "  make prod-airtight       - Load images from tarball and start (no internet needed)"
+	@echo "                             Use AIRTIGHT_BUNDLE=<file> to specify the tarball"
+	@echo "  make prod-airtight-logs  - Show logs for airtight deployment"
+	@echo ""
+	@echo "VM Deployment (single server / cloud VM):"
+	@echo "  make vm-deploy          - Interactive setup: installs Docker, configures .env, and starts Aurora"
+	@echo "                            Supports --prebuilt (default), --build, --skip-docker, --hostname=<host>"
+	@echo ""
 	@echo "Kubernetes Deployment:"
 	@echo "  make deploy-build      - Build and push images for K8s deployment (reads values.generated.yaml)"
 	@echo "  make deploy            - Run deploy-build then deploy with Helm"
@@ -64,6 +75,7 @@ build:
 down:
 	@docker compose down --remove-orphans 2>/dev/null || true
 	@docker compose -f docker-compose.prod-local.yml down --remove-orphans 2>/dev/null || true
+	@docker compose -f docker-compose.airtight.yml down --remove-orphans 2>/dev/null || true
 	@for ep in $$(docker network inspect aurora_default -f '{{range .Containers}}{{.Name}} {{end}}' 2>/dev/null); do docker network disconnect -f aurora_default $$ep 2>/dev/null; done; true
 	@docker network rm aurora_default 2>/dev/null || true
 
@@ -218,6 +230,41 @@ prod-local-nuke:
 	@echo "Production-local cleanup complete!"
 	@echo "Note: .env file preserved. To remove it, delete manually."
 
+# Airtight deployment commands (restricted-egress / enterprise VMs)
+package-airtight:
+	@chmod +x scripts/package-airtight.sh
+	@./scripts/package-airtight.sh
+
+prod-airtight:
+	@if [ ! -f .env ]; then \
+		echo "Error: .env file not found."; \
+		echo "Please run 'make init' first to set up your environment."; \
+		exit 1; \
+	fi
+	@if [ -n "$(AIRTIGHT_BUNDLE)" ]; then \
+		echo "Loading images from $(AIRTIGHT_BUNDLE)..."; \
+		docker load < "$(AIRTIGHT_BUNDLE)"; \
+		echo ""; \
+	fi
+	@echo "Starting Aurora in airtight mode (pre-built images, no registry pulls)..."
+	@docker compose -f docker-compose.airtight.yml down --remove-orphans 2>/dev/null || true
+	@docker network rm aurora_default 2>/dev/null || true
+	@docker compose -f docker-compose.airtight.yml up -d
+	@echo ""
+	@echo "Aurora is starting (airtight mode)!"
+	@echo "  - Frontend: $$(v=$$(grep -E '^FRONTEND_URL=' .env | cut -d= -f2- | tr -d '"'); echo $${v:-http://localhost:3000})"
+	@echo "  - Backend API: $$(v=$$(grep -E '^NEXT_PUBLIC_BACKEND_URL=' .env | cut -d= -f2- | tr -d '"'); echo $${v:-http://localhost:5080})"
+	@echo "  - Chatbot WebSocket: $$(v=$$(grep -E '^NEXT_PUBLIC_WEBSOCKET_URL=' .env | cut -d= -f2- | tr -d '"'); echo $${v:-ws://localhost:5006})"
+	@echo ""
+	@echo "View logs with: make prod-airtight-logs"
+
+prod-airtight-logs:
+	@if [ -z "$(filter-out $@,$(MAKECMDGOALS))" ]; then \
+		docker compose -f docker-compose.airtight.yml logs --tail 50 -f; \
+	else \
+		docker compose -f docker-compose.airtight.yml logs --tail 50 -f $(filter-out $@,$(MAKECMDGOALS)); \
+	fi
+
 # Kubernetes deployment commands
 deploy-build:
 	@echo "Building and pushing images for Kubernetes deployment..."
@@ -274,6 +321,10 @@ deploy: deploy-build
 	@echo "✓ Deployment complete!"
 	@echo "Next: Initialize Vault (first time only) and verify deployment."
 	@echo "  kubectl get pods -n aurora"
+
+vm-deploy:
+	@chmod +x deploy/vm-deploy.sh
+	@deploy/vm-deploy.sh $(filter-out $@,$(MAKECMDGOALS))
 
 %:
 	@:

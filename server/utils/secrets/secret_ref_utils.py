@@ -49,6 +49,7 @@ SUPPORTED_SECRET_PROVIDERS: Set[str] = {
     "cloudflare", # Cloudflare (DNS, Workers, WAF, analytics)
     "slack",    # Slack connector tokens
     "confluence", # Confluence connector tokens
+    "jira",       # Jira connector tokens
     "sharepoint", # SharePoint connector tokens
     "coroot",   # Coroot connector tokens
     "bitbucket", # Bitbucket connector tokens

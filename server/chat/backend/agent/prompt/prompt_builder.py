@@ -133,9 +133,15 @@ def build_provider_context_segment(provider_preference: Optional[Any], selected_
                 parts.append(
                     "- Fetch the Azure subscription before writing Terraform: cloud_exec('azure', \"account show --query 'id' -o tsv\"). Use the concrete subscription ID in code.\n"
                 )
-            elif provider == "ovh":
+            elif provider not in ("ovh", "scaleway", "tailscale", "cloudflare", "grafana"):
                 parts.append(
-                    "## OVHcloud Reference:\n\n"
+                    "- Identify the correct project or subscription with the matching CLI command before writing infrastructure code.\n"
+                )
+
+    for provider in normalized or []:
+        if provider == "ovh":
+            parts.append(
+                "## OVHcloud Reference:\n\n"
                     "### CLI COMMANDS (use cloud_exec with 'ovh'):\n\n"
                     "**Discovery Commands:**\n"
                     "- List projects: `cloud_exec('ovh', 'cloud project list --json')`\n"
@@ -220,8 +226,8 @@ def build_provider_context_segment(provider_preference: Optional[Any], selected_
                     "Topic should be the **CLI command** (e.g., 'cloud instance create', 'cloud kube list')\n\n"
                     "️ Do NOT mix them up! Terraform errors need Terraform docs, CLI errors need CLI docs.\n"
                 )
-            elif provider == "scaleway":
-                parts.append(
+        elif provider == "scaleway":
+            parts.append(
                     "## Scaleway Reference:\n\n"
                     "### CLI COMMANDS (use cloud_exec with 'scaleway'):\n\n"
                     "**CRITICAL: Always use cloud_exec('scaleway', 'command') for Scaleway commands, NOT terminal_exec!**\n"
@@ -315,8 +321,8 @@ def build_provider_context_segment(provider_preference: Optional[Any], selected_
                     "- Default region: fr-par, zones: fr-par-1, fr-par-2, fr-par-3\n"
                     "- Default SSH username for instances: `root`\n\n"
                 )
-            elif provider == "tailscale":
-                parts.append(
+        elif provider == "tailscale":
+            parts.append(
                     "## Tailscale Reference:\n\n"
                     "Tailscale is a mesh VPN/network provider. It connects your devices into a secure private network called a 'tailnet'.\n"
                     "Unlike cloud providers (GCP, AWS, Azure), Tailscale doesn't provision infrastructure - it networks existing devices.\n\n"
@@ -358,8 +364,65 @@ def build_provider_context_segment(provider_preference: Optional[Any], selected_
                     "- Auth key values are only shown once at creation\n"
                     "- Tailscale does NOT provision infrastructure\n\n"
                 )
-            elif provider == "grafana":
-                parts.append(
+        elif provider == "cloudflare":
+            parts.append(
+                    "## Cloudflare Reference:\n\n"
+                    "Cloudflare is connected for DNS, CDN, WAF, and edge diagnostics with full remediation capabilities.\n\n"
+                    "### IMPORTANT — NO CLI SUPPORT:\n"
+                    "- Do NOT use `cloud_exec('cloudflare', ...)` — there is no Cloudflare CLI connector.\n"
+                    "- Use the dedicated `query_cloudflare`, `cloudflare_list_zones`, and `cloudflare_action` tools instead.\n\n"
+                    "### OBSERVATION TOOLS (read-only):\n"
+                    "- **List zones**: `cloudflare_list_zones()` — discover all zones with IDs, names, and status.\n"
+                    "- **DNS records**: `query_cloudflare(resource_type='dns_records', zone_id='...')` — list A, AAAA, CNAME, MX, TXT records.\n"
+                    "- **Analytics**: `query_cloudflare(resource_type='analytics', zone_id='...')` — traffic, bandwidth, threats, HTTP status codes, content types, HTTP versions, SSL protocols, IP classification.\n"
+                    "  - Pass `since` (e.g. '-60' for last hour, or ISO-8601) and `until` (ISO-8601) to control the time window.\n"
+                    "  - Bucket granularity is auto-selected: minute buckets for ≤100 min, hourly for ≤100 h, daily beyond that.\n"
+                    "  - Default limit=50 returns a bucketed time-series (e.g., last 24h yields multiple hourly buckets). Set `limit=1` to force a single aggregate covering the entire window.\n"
+                    "- **Security events**: `query_cloudflare(resource_type='firewall_events', zone_id='...')` — recent WAF blocks, challenges, JS challenges.\n"
+                    "- **Firewall rules**: `query_cloudflare(resource_type='firewall_rules', zone_id='...')` — active firewall rules and expressions.\n"
+                    "- **Rate limits**: `query_cloudflare(resource_type='rate_limits', zone_id='...')` — rate limiting rules (thresholds, actions, URL patterns).\n"
+                    "- **Zone settings**: `query_cloudflare(resource_type='zone_settings', zone_id='...')` — ALL zone settings (security level, caching, dev mode, WAF, TLS version, minification, etc.).\n"
+                    "- **Page rules**: `query_cloudflare(resource_type='page_rules', zone_id='...')` — URL-based redirects, forwarding, cache overrides.\n"
+                    "- **Workers**: `query_cloudflare(resource_type='workers')` — list Cloudflare Workers scripts.\n"
+                    "- **Load balancers**: `query_cloudflare(resource_type='load_balancers', zone_id='...')` — LB config, pools, failover.\n"
+                    "- **SSL/TLS**: `query_cloudflare(resource_type='ssl', zone_id='...')` — TLS mode (off/flexible/full/strict) and cert status.\n"
+                    "- **Healthchecks**: `query_cloudflare(resource_type='healthchecks', zone_id='...')` — origin health monitors.\n\n"
+                    "### REMEDIATION TOOLS (write actions via `cloudflare_action`):\n"
+                    "All remediation uses one tool: `cloudflare_action(action_type='...', zone_id='...', ...)`\n\n"
+                    "- **Purge cache**: `cloudflare_action(action_type='purge_cache', zone_id='...', files=['https://...'])` — clear cached content.\n"
+                    "  - Omit `files` to purge everything (use with caution — spikes origin load).\n"
+                    "- **Under Attack Mode**: `cloudflare_action(action_type='security_level', zone_id='...', value='under_attack')` — enable JS challenge for all visitors.\n"
+                    "  - Other values: 'high', 'medium', 'low', 'essentially_off'.\n"
+                    "  - Use during active DDoS or abuse. Remember to lower it after the incident.\n"
+                    "- **Development mode**: `cloudflare_action(action_type='development_mode', zone_id='...', value='on')` — bypass cache entirely.\n"
+                    "  - Useful for debugging stale content issues. Auto-expires after 3 hours.\n"
+                    "- **DNS update**: `cloudflare_action(action_type='dns_update', zone_id='...', record_id='...', content='1.2.3.4')` — change a DNS record.\n"
+                    "  - Use for failover to backup origin, maintenance page, or IP migration.\n"
+                    "  - Get record_id from `query_cloudflare(resource_type='dns_records')`.\n"
+                    "  - Also supports `proxied` (bool) and `ttl` (int, 1=auto).\n"
+                    "- **Toggle firewall rule**: `cloudflare_action(action_type='toggle_firewall_rule', zone_id='...', rule_id='...', paused=True)` — disable a rule.\n"
+                    "  - Use to unblock false-positive blocks or emergency-enable a blocking rule.\n"
+                    "  - Get rule_id from `query_cloudflare(resource_type='firewall_rules')`.\n\n"
+                    "### RCA WORKFLOW:\n"
+                    "1. Start with `cloudflare_list_zones()` to discover zone IDs.\n"
+                    "2. Check `zone_settings` for current security level, dev mode, caching config.\n"
+                    "3. Check `analytics` for traffic spikes, elevated error rates (5xx), or threat surges.\n"
+                    "4. Check `firewall_events` if traffic is being blocked unexpectedly.\n"
+                    "5. Check `firewall_rules` and `rate_limits` if legitimate traffic appears throttled.\n"
+                    "6. Check `dns_records` if a domain resolution issue is suspected.\n"
+                    "7. Check `ssl` if TLS handshake errors are reported.\n"
+                    "8. Check `healthchecks` and `load_balancers` if origin availability is degraded.\n"
+                    "9. Check `page_rules` if redirects or caching overrides are misbehaving.\n\n"
+                    "### CRITICAL RULES:\n"
+                    "- NEVER call cloud_exec with provider='cloudflare' — it will fail.\n"
+                    "- NEVER use query_cloudflare to list zones — use `cloudflare_list_zones()` instead.\n"
+                    "- Always get zone IDs first before querying zone-specific data.\n"
+                    "- Only zones enabled by the user are accessible; others will be rejected.\n"
+                    "- Analytics covers the last 24h by default; use the `since` parameter for custom ranges.\n"
+                    "- Remediation actions require write permissions on the token; if a 403 is returned, tell the user which permission to add.\n\n"
+                )
+        elif provider == "grafana":
+            parts.append(
                     "## Grafana Reference:\n\n"
                     "Grafana is connected as an **observation-only** provider for alert ingestion and dashboard monitoring.\n\n"
                     "### IMPORTANT — NO CLI SUPPORT:\n"
@@ -375,10 +438,6 @@ def build_provider_context_segment(provider_preference: Optional[Any], selected_
                     "- NEVER call cloud_exec with provider='grafana' — it will fail.\n"
                     "- Use the alert context already available in the conversation.\n"
                     "- For deeper investigation, identify the underlying cloud provider from the alert and use that provider's tools.\n\n"
-                )
-            else:
-                parts.append(
-                    "- Identify the correct project or subscription with the matching CLI command before writing infrastructure code.\n"
                 )
 
     return "".join(parts)

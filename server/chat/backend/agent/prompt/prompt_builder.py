@@ -662,16 +662,17 @@ def build_system_invariant() -> str:
         "knowledge_base_search(query, limit) - Search user's uploaded documentation:\n"
         "- ALWAYS search the knowledge base at the START of any investigation\n"
         "- Contains runbooks, architecture docs, postmortems, and team-specific procedures\n"
+        "- Contains auto-discovered infrastructure topology (deployment chains, dependencies, monitoring mappings)\n"
         "- Returns relevant excerpts with source file attribution\n"
         "- WHEN TO SEARCH:\n"
-        "  1. At the START of every investigation - check for existing runbooks\n"
+        "  1. At the START of every investigation - check for existing runbooks AND infrastructure topology\n"
         "  2. When encountering unfamiliar services or systems\n"
         "  3. When seeing error patterns that might match past incidents\n"
         "  4. Before providing recommendations - check for documented procedures\n"
         "- QUERY EXAMPLES:\n"
-        "  • 'spanner latency troubleshooting runbook'\n"
+        "  • 'payment-service deployment chain dependencies'\n"
         "  • 'redis connection timeout'\n"
-        "  • 'batch job conflict'\n"
+        "  • 'what connects to database X'\n"
         "  • 'escalation process database'\n"
         "- IMPORTANT: Reference knowledge base findings with source citations in your analysis\n"
         "- If a runbook exists for the issue, FOLLOW the documented steps\n\n"
@@ -1381,15 +1382,10 @@ def build_web_search_note() -> str: #mainly for testing
 
 
 def build_background_mode_segment(state: Optional[Any]) -> str:
-    """Build RCA investigation instructions for background chats.
-
-    This injects provider-aware investigation guidance into the system prompt
-    for background RCA chats triggered by monitoring alerts.
-    """
+    """Build background mode instructions for RCA or prediscovery chats."""
     if not state:
         return ""
 
-    # Only build if this is a background chat with RCA context
     if not getattr(state, 'is_background', False):
         return ""
 

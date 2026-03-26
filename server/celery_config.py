@@ -60,6 +60,7 @@ celery_app.conf.update(
         'chat.background.summarization',
         'chat.background.visualization_generator',
         'chat.background.postmortem_generator',
+        'chat.background.prediscovery_task',
         'routes.knowledge_base.tasks',
         'services.discovery.tasks',
         'utils.aws.credential_refresh',
@@ -86,6 +87,10 @@ celery_app.conf.update(
         'mark-stale-services': {
             'task': 'services.discovery.tasks.mark_stale_services',
             'schedule': 86400.0,  # Daily (24 hours)
+        },
+        'run-prediscovery': {
+            'task': 'chat.background.prediscovery_task.run_prediscovery_all_orgs',
+            'schedule': 3600.0,  # Check hourly; per-org interval controlled by prediscovery_interval_hours preference
         },
         'refresh-aws-credentials': {
             'task': 'utils.aws.credential_refresh.refresh_aws_credentials',
@@ -149,6 +154,12 @@ try:
     logging.info("Discovery tasks imported successfully")
 except ImportError as e:
     logging.warning(f"Failed to import discovery tasks: {e}")
+
+try:
+    import chat.background.prediscovery_task  # noqa: F401
+    logging.info("Prediscovery task imported successfully")
+except ImportError as e:
+    logging.warning(f"Failed to import prediscovery task: {e}")
 
 try:
     import utils.aws.credential_refresh

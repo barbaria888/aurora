@@ -33,7 +33,9 @@ def create_token(user_id):
         expires_days = data.get('expires_days')
         token = generate_token()
         expires_at = datetime.now() + timedelta(days=expires_days) if expires_days else None
-        org_id = get_org_id_from_request() or ""
+        org_id = get_org_id_from_request()
+        if not org_id:
+            return jsonify({'error': 'Organization context required to create kubectl tokens'}), 400
         conn = connect_to_db_as_user()
         try:
             cursor = conn.cursor(cursor_factory=RealDictCursor)

@@ -679,7 +679,7 @@ def _check_onprem(user_id: str, org_id: str) -> Dict[str, Any]:
                 count = cursor.fetchone()[0]
         return {"connected": count > 0}
     except Exception as e:
-        logger.warning("[STATUS] onprem check failed (user=%s, org=%s): %s", user_id, org_id, e)
+        logger.warning("[STATUS] onprem check failed (user=%s, org=%s): %s", user_id, org_id, e, exc_info=True)
         return {"connected": False}
 
 
@@ -695,5 +695,6 @@ def _check_kubectl(user_id: str, org_id: str) -> Dict[str, Any]:
                 )
                 count = cursor.fetchone()[0]
         return {"connected": count > 0}
-    except Exception:
+    except Exception as e:
+        logger.warning("[STATUS] kubectl check failed (user=%s, org=%s): %s", user_id, org_id, e, exc_info=True)
         return {"connected": False}

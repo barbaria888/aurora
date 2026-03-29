@@ -7,6 +7,7 @@ from utils.db.db_utils import connect_to_db_as_admin, connect_to_db_as_user
 from utils.auth.token_management import get_token_data
 from utils.auth.stateless_auth import get_org_id_from_request
 from utils.secrets.secret_ref_utils import delete_user_secret, SUPPORTED_SECRET_PROVIDERS
+from routes.connector_status import _check_kubectl, _check_onprem
 import requests
 import os
 
@@ -159,31 +160,17 @@ def get_connected_accounts(user_id, target_user_id):
         # 3) Kubectl agent connections
         # ------------------------------
         if "kubectl" not in accounts:
-            cursor2 = conn.cursor()
-            cursor2.execute(
-                """SELECT COUNT(*) FROM active_kubectl_connections ac
-                   JOIN kubectl_agent_tokens kat ON ac.token = kat.token
-                   WHERE (kat.user_id = %s OR kat.org_id = %s) AND ac.status = 'active'""",
-                (user_id, org_id),
-            )
-            if cursor2.fetchone()[0] > 0:
+            result = _check_kubectl(user_id, org_id)
+            if result.get("connected"):
                 accounts["kubectl"] = {"isConnected": True, "name": "Kubernetes", "displayText": "Kubernetes Cluster"}
-            cursor2.close()
 
         # ------------------------------
         # 4) On-prem VM connections
         # ------------------------------
         if "onprem" not in accounts:
-            cursor3 = conn.cursor()
-            cursor3.execute(
-                """SELECT COUNT(*) FROM user_manual_vms
-                   WHERE (user_id = %s OR org_id = %s)
-                     AND connection_verified = TRUE""",
-                (user_id, org_id),
-            )
-            if cursor3.fetchone()[0] > 0:
+            result = _check_onprem(user_id, org_id)
+            if result.get("connected"):
                 accounts["onprem"] = {"isConnected": True, "name": "Instances SSH Access", "displayText": "VM SSH Access"}
-            cursor3.close()
 
         cursor.close()
         conn.close()

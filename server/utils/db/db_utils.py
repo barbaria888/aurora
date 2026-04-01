@@ -449,7 +449,7 @@ def initialize_tables():
                         output_tokens INTEGER NOT NULL DEFAULT 0,
                         total_tokens INTEGER GENERATED ALWAYS AS (input_tokens + output_tokens) STORED,
                         estimated_cost DECIMAL(10,6) DEFAULT 0.00,
-                        surcharge_rate DECIMAL(5,4) DEFAULT 0.3000,
+                        surcharge_rate DECIMAL(5,4) DEFAULT 0.0000,
                         surcharge_amount DECIMAL(10,6) GENERATED ALWAYS AS (estimated_cost * surcharge_rate) STORED,
                         total_cost_with_surcharge DECIMAL(10,6) GENERATED ALWAYS AS (estimated_cost * (1 + surcharge_rate)) STORED,
                         response_time_ms INTEGER,
@@ -1308,7 +1308,7 @@ def initialize_tables():
             try:
                 cursor.execute("""
                     ALTER TABLE llm_usage_tracking 
-                    ADD COLUMN IF NOT EXISTS surcharge_rate DECIMAL(5,4) DEFAULT 0.3000;
+                    ADD COLUMN IF NOT EXISTS surcharge_rate DECIMAL(5,4) DEFAULT 0.0000;
                 """)
                 cursor.execute("""
                     ALTER TABLE llm_usage_tracking 
@@ -1326,6 +1326,59 @@ def initialize_tables():
                 logging.warning(
                     f"Error adding surcharge fields to llm_usage_tracking: {e}"
                 )
+                conn.rollback()
+
+            # Migration: Zero out surcharge_rate (markup removed, raw provider costs only)
+            try:
+                cursor.execute("""
+                    ALTER TABLE llm_usage_tracking
+                    ALTER COLUMN surcharge_rate SET DEFAULT 0.0000;
+                """)
+                cursor.execute("""
+                    SELECT EXISTS(
+                        SELECT 1 FROM llm_usage_tracking
+                        WHERE surcharge_rate != 0.0000
+                        LIMIT 1
+                    );
+                """)
+                has_nonzero = cursor.fetchone()[0]
+                if has_nonzero:
+                    cursor.execute("""
+                        UPDATE llm_usage_tracking
+                        SET surcharge_rate = 0.0000
+                        WHERE surcharge_rate != 0.0000;
+                    """)
+                    logging.info(f"Zeroed surcharge_rate on {cursor.rowcount} llm_usage_tracking rows.")
+                conn.commit()
+            except Exception as e:
+                logging.warning(f"Error zeroing surcharge_rate: {e}")
+                conn.rollback()
+
+            # Migration: Backfill org_id on llm_usage_tracking from users table
+            try:
+                cursor.execute("""
+                    SELECT EXISTS(
+                        SELECT 1 FROM llm_usage_tracking
+                        WHERE org_id IS NULL
+                        LIMIT 1
+                    );
+                """)
+                has_null_org = cursor.fetchone()[0]
+                if has_null_org:
+                    cursor.execute("""
+                        UPDATE llm_usage_tracking lut
+                        SET org_id = u.org_id
+                        FROM users u
+                        WHERE lut.user_id = u.id::text
+                          AND lut.org_id IS NULL
+                          AND u.org_id IS NOT NULL;
+                    """)
+                    updated = cursor.rowcount
+                    if updated > 0:
+                        logging.info(f"Backfilled org_id on {updated} llm_usage_tracking rows.")
+                conn.commit()
+            except Exception as e:
+                logging.warning(f"Error backfilling org_id on llm_usage_tracking: {e}")
                 conn.rollback()
 
             # Migration: Add secret_ref column to user_tokens for Vault integration

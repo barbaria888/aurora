@@ -29,9 +29,10 @@ spec:
         - name: redis
           image: redis:7-alpine
           imagePullPolicy: IfNotPresent
-          command: ["redis-server", "--appendonly", "yes", "--dir", "/data"]
+          command: ["redis-server", "--appendonly", "yes", "--dir", "/data", "--maxmemory", {{ .Values.config.REDIS_MAXMEMORY | default "256mb" | quote }}, "--maxmemory-policy", "allkeys-lru"]
           securityContext:
             allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
             capabilities:
               drop: ["ALL"]
           ports:

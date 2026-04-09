@@ -1065,6 +1065,39 @@ def initialize_tables():
                     CREATE UNIQUE INDEX IF NOT EXISTS postmortems_incident_id_unique ON postmortems(incident_id);
                     CREATE INDEX IF NOT EXISTS idx_postmortems_user_id ON postmortems(user_id);
                 """,
+                "incident_lifecycle_events": """
+                    CREATE TABLE IF NOT EXISTS incident_lifecycle_events (
+                        id SERIAL PRIMARY KEY,
+                        incident_id UUID NOT NULL REFERENCES incidents(id) ON DELETE CASCADE,
+                        user_id VARCHAR(255) NOT NULL,
+                        org_id VARCHAR(255),
+                        event_type VARCHAR(50) NOT NULL,
+                        previous_value VARCHAR(50),
+                        new_value VARCHAR(50),
+                        metadata JSONB DEFAULT '{}'::jsonb,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    );
+
+                    CREATE INDEX IF NOT EXISTS idx_lifecycle_incident ON incident_lifecycle_events(incident_id, created_at);
+                    CREATE INDEX IF NOT EXISTS idx_lifecycle_user ON incident_lifecycle_events(user_id, created_at DESC);
+                """,
+                "audit_log": """
+                    CREATE TABLE IF NOT EXISTS audit_log (
+                        id SERIAL PRIMARY KEY,
+                        org_id VARCHAR(255) NOT NULL,
+                        user_id VARCHAR(255) NOT NULL,
+                        action VARCHAR(100) NOT NULL,
+                        resource_type VARCHAR(100) NOT NULL,
+                        resource_id VARCHAR(255),
+                        detail JSONB DEFAULT '{}'::jsonb,
+                        ip_address VARCHAR(45),
+                        user_agent TEXT,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    );
+
+                    CREATE INDEX IF NOT EXISTS idx_audit_log_org_created ON audit_log(org_id, created_at DESC);
+                    CREATE INDEX IF NOT EXISTS idx_audit_log_action ON audit_log(org_id, action);
+                """,
             }
 
             # List of tables that should have RLS enabled and a policy applied.
@@ -1111,6 +1144,7 @@ def initialize_tables():
             rls_tables.append("incident_alerts")
             rls_tables.append("incident_feedback")
             rls_tables.append("postmortems")
+            rls_tables.append("incident_lifecycle_events")
             rls_tables.append("github_connected_repos")
             rls_tables.append("execution_steps")
 
@@ -1716,6 +1750,54 @@ def initialize_tables():
                 logging.warning(f"Error adding Jira columns to postmortems: {e}")
                 conn.rollback()
 
+            # Migration: Add resolved_at, alert_fired_at, and investigation_started_at
+            # columns to incidents table.
+            #   - resolved_at:             when the incident was actually resolved
+            #   - alert_fired_at:          when the upstream system raised the alert
+            #   - investigation_started_at: when Aurora's RCA worker actually began work
+            #                              (used to compute pickup latency / MTTD)
+            try:
+                cursor.execute("""
+                    ALTER TABLE incidents
+                    ADD COLUMN IF NOT EXISTS resolved_at TIMESTAMP,
+                    ADD COLUMN IF NOT EXISTS alert_fired_at TIMESTAMP,
+                    ADD COLUMN IF NOT EXISTS investigation_started_at TIMESTAMP;
+                """)
+                logging.info("Added resolved_at, alert_fired_at, and investigation_started_at columns to incidents table (if not exist).")
+                conn.commit()
+            except Exception as e:
+                logging.warning(f"Error adding resolved_at/alert_fired_at/investigation_started_at to incidents: {e}")
+                conn.rollback()
+
+            # NOTE: We intentionally do NOT backfill resolved_at from updated_at:
+            # updated_at is bumped on every PATCH (summary, aurora status, active-tab,
+            # etc.), so it would stamp the last metadata change rather than the true
+            # resolution time and skew MTTR for legacy incidents. Leave legacy
+            # resolved_at as NULL — those rows will simply not contribute to MTTR.
+
+            # Indexes for SRE metrics queries. These queries are org-scoped via
+            # RLS (SET myapp.current_org_id) and do not filter by user_id in their
+            # WHERE clauses, so user_id as a leading column would not contribute
+            # to selectivity. Index only the columns actually used as predicates.
+            # We DROP any earlier (user_id, ...) variants so dev/staging environments
+            # that saw the first definition get the corrected indexes on next boot.
+            try:
+                cursor.execute("""
+                    DROP INDEX IF EXISTS idx_incidents_resolved_at;
+                    DROP INDEX IF EXISTS idx_incidents_service_started;
+
+                    CREATE INDEX IF NOT EXISTS idx_incidents_resolved_at
+                    ON incidents(resolved_at DESC) WHERE resolved_at IS NOT NULL;
+
+                    CREATE INDEX IF NOT EXISTS idx_incidents_service_started
+                    ON incidents(alert_service, started_at DESC);
+                """)
+                logging.info("Created SRE metrics indexes on incidents table.")
+                conn.commit()
+            except Exception as e:
+                logging.warning(f"Error creating SRE metrics indexes: {e}")
+                conn.rollback()
+
             # View creation moved to after org_id migration (see below)
 
             # Early migration: ensure org_id column exists on all tables
@@ -1796,6 +1878,7 @@ def initialize_tables():
                     "incident_alerts",
                     "incident_feedback",
                     "postmortems",
+                    "incident_lifecycle_events",
                 ]:
                     insert_policy_sql = f"""
                         DO $$
@@ -1890,6 +1973,7 @@ def initialize_tables():
                 "cloud_billing_usage", "provider_metrics",
                 "knowledge_base_memory", "knowledge_base_documents",
                 "incident_feedback", "postmortems",
+                "incident_lifecycle_events",
                 "github_connected_repos",
             ]
             for tbl in org_id_tables:

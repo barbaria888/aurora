@@ -408,6 +408,10 @@ app.register_blueprint(incident_feedback_bp)
 from routes.postmortem_routes import postmortem_bp
 app.register_blueprint(postmortem_bp)
 
+# --- SRE Metrics Routes ---
+from routes.metrics_routes import metrics_bp
+app.register_blueprint(metrics_bp)
+
 # --- Visualization Streaming Routes ---
 from routes.visualization_stream import visualization_bp
 app.register_blueprint(visualization_bp)
@@ -417,6 +421,10 @@ from routes.monitor.fleet_routes import fleet_bp
 from routes.monitor.waterfall_routes import waterfall_bp
 app.register_blueprint(fleet_bp)
 app.register_blueprint(waterfall_bp)
+
+# --- Audit Log Routes ---
+from routes.audit_routes import audit_bp
+app.register_blueprint(audit_bp)
 
 # --- User & Auth Routes ---
 from routes.user_preferences import user_preferences_bp

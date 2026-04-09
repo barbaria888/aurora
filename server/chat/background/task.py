@@ -426,14 +426,37 @@ def run_background_chat(
                                 f"[BackgroundChat] Linked session {session_id} and task {self.request.id} to incident {incident_id}"
                             )
                     
-                    # Set incident aurora_status to running
+                    # Set incident aurora_status to running and stamp the moment
+                    # the worker actually picked up the task. Used by the SRE
+                    # metrics dashboard to compute pickup latency (MTTD as
+                    # "time from webhook arrival to investigation start"). We
+                    # COALESCE so a retry doesn't overwrite the original pickup.
+                    pickup_at = datetime.now()
                     with conn.cursor() as cursor:
                         cursor.execute(
-                            "UPDATE incidents SET aurora_status = %s, updated_at = %s WHERE id = %s",
-                            ("running", datetime.now(), incident_id)
+                            """UPDATE incidents
+                               SET aurora_status = %s,
+                                   investigation_started_at = COALESCE(investigation_started_at, %s),
+                                   updated_at = %s
+                               WHERE id = %s""",
+                            ("running", pickup_at, pickup_at, incident_id),
                         )
                         conn.commit()
                         logger.info(f"[BackgroundChat] Set incident {incident_id} aurora_status to 'running' at start of RCA")
+
+                    # Record lifecycle event for RCA start
+                    try:
+                        with conn.cursor() as cursor:
+                            cursor.execute(
+                                """INSERT INTO incident_lifecycle_events
+                                   (incident_id, user_id, org_id, event_type, new_value)
+                                   VALUES (%s, %s, %s, %s, %s)""",
+                                (incident_id, user_id, None, 'rca_started', 'running')
+                            )
+                            conn.commit()
+                            logger.info(f"[BackgroundChat] Recorded lifecycle event 'rca_started' for incident {incident_id}")
+                    except Exception as le:
+                        logger.error(f"[BackgroundChat] Failed to record lifecycle event 'rca_started' for incident {incident_id}: {le}")
                     
                     # Send investigation started notifications (if enabled)
                     # Skip notifications if explicitly disabled (e.g., for Slack @mentions)
@@ -492,7 +515,8 @@ def run_background_chat(
                 logger.warning(f"[BackgroundChat] Failed to clear task ID for incident {incident_id}: {e}")
             
             _update_incident_status(incident_id, "analyzed")
-            _update_incident_aurora_status(incident_id, "summarizing")
+
+            _update_incident_aurora_status(incident_id, "summarizing",  user_id=user_id)
 
             # Post RCA-complete comment to linked JSM incident
             if (trigger_metadata or {}).get("source") == "opsgenie":
@@ -540,7 +564,7 @@ def run_background_chat(
                 )
             except Exception as e:
                 logger.error(f"[BackgroundChat] Failed to enqueue post-RCA summarization for incident {incident_id}: {e}")
-                _update_incident_aurora_status(incident_id, "complete")
+                _update_incident_aurora_status(incident_id, "complete", user_id=user_id)
             
             # Generate final complete visualization
             try:
@@ -580,18 +604,18 @@ def run_background_chat(
         logger.error(f"[BackgroundChat] Timeout after 30 minutes for session {session_id}")
         _update_session_status(session_id, "failed")
         if incident_id:
-            _update_incident_aurora_status(incident_id, "error")
+            _update_incident_aurora_status(incident_id, "error", user_id=user_id)
         return {
             "session_id": session_id,
             "status": "failed",
             "error": "Background chat exceeded 30 minute timeout",
         }
-        
+
     except Exception as e:
         logger.exception(f"[BackgroundChat] Failed for session {session_id}: {e}")
         _update_session_status(session_id, "failed")
         if incident_id:
-            _update_incident_aurora_status(incident_id, "error")
+            _update_incident_aurora_status(incident_id, "error", user_id=user_id)
         return {
             "session_id": session_id,
             "status": "failed",
@@ -1098,22 +1122,56 @@ def _update_session_status(session_id: str, status: str) -> None:
         logger.error(f"[BackgroundChat] Failed to update session {session_id} status to '{status}': {e}")
 
 
-def _update_incident_aurora_status(incident_id: str, aurora_status: str) -> None:
+def _update_incident_aurora_status(incident_id: str, aurora_status: str, user_id: Optional[str] = None, org_id: Optional[str] = None) -> None:
     """Update incident aurora_status (running/complete/error).
-    
+
     Args:
         incident_id: The incident ID
-        aurora_status: New status ('running', 'complete', 'error')
+        aurora_status: New status ('running', 'complete', 'error', 'summarizing')
+        user_id: The user ID for lifecycle event recording
+        org_id: The org ID for lifecycle event recording (optional)
     """
+    # Map aurora_status values to lifecycle event types
+    _STATUS_EVENT_MAP = {
+        'running': 'rca_started',
+        'complete': 'rca_completed',
+        'error': 'rca_error',
+    }
     try:
         with db_pool.get_admin_connection() as conn:
             with conn.cursor() as cursor:
-                cursor.execute(
-                    "UPDATE incidents SET aurora_status = %s, updated_at = %s WHERE id = %s",
-                    (aurora_status, datetime.now(), incident_id)
-                )
+                now = datetime.now()
+                if aurora_status == 'complete':
+                    cursor.execute(
+                        """UPDATE incidents
+                           SET aurora_status = %s, updated_at = %s,
+                               analyzed_at = COALESCE(analyzed_at, %s)
+                           WHERE id = %s""",
+                        (aurora_status, now, now, incident_id)
+                    )
+                else:
+                    cursor.execute(
+                        "UPDATE incidents SET aurora_status = %s, updated_at = %s WHERE id = %s",
+                        (aurora_status, now, incident_id)
+                    )
             conn.commit()
             logger.info(f"[BackgroundChat] Set incident {incident_id} aurora_status to '{aurora_status}'")
+
+            # Record lifecycle event for trackable status transitions
+            event_type = _STATUS_EVENT_MAP.get(aurora_status)
+            if event_type and user_id:
+                try:
+                    with conn.cursor() as cursor:
+                        cursor.execute(
+                            """INSERT INTO incident_lifecycle_events
+                               (incident_id, user_id, org_id, event_type, new_value)
+                               VALUES (%s, %s, %s, %s, %s)""",
+                            (incident_id, user_id, org_id, event_type, aurora_status)
+                        )
+                    conn.commit()
+                    logger.info(f"[BackgroundChat] Recorded lifecycle event '{event_type}' for incident {incident_id}")
+                except Exception as le:
+                    logger.error(f"[BackgroundChat] Failed to record lifecycle event '{event_type}' for incident {incident_id}: {le}")
     except Exception as e:
         logger.error(f"[BackgroundChat] Failed to update aurora_status: {e}")
 
@@ -1870,6 +1928,31 @@ def cleanup_stale_background_chats() -> Dict[str, Any]:
                                 "UPDATE incidents SET aurora_status = 'error', status = 'analyzed', updated_at = %s WHERE id = %s",
                                 (datetime.now(), incident_id)
                             )
+                            # Record lifecycle event for stale session error. Wrap in savepoint
+                            # so a failure here doesn't abort the outer transaction and stop
+                            # the status UPDATE from committing for remaining sessions.
+                            try:
+                                cursor.execute("SAVEPOINT sp_rca_error")
+                                cursor.execute(
+                                    """INSERT INTO incident_lifecycle_events
+                                       (incident_id, user_id, org_id, event_type, new_value)
+                                       VALUES (%s, %s, %s, %s, %s)""",
+                                    (incident_id, user_id, None, 'rca_error', 'error')
+                                )
+                                cursor.execute("RELEASE SAVEPOINT sp_rca_error")
+                            except Exception as lc_exc:
+                                try:
+                                    cursor.execute("ROLLBACK TO SAVEPOINT sp_rca_error")
+                                except Exception as rb_exc:
+                                    logger.debug(
+                                        "[BackgroundChat:Cleanup] Rollback to sp_rca_error failed for incident %s: %s",
+                                        incident_id, rb_exc,
+                                    )
+                                logger.warning(
+                                    "[BackgroundChat:Cleanup] Failed to record rca_error lifecycle event "
+                                    "for incident %s (user %s): %s",
+                                    incident_id, user_id, lc_exc,
+                                )
                 conn.commit()
             
             logger.info(f"[BackgroundChat:Cleanup] Marked {cleaned_count} stale sessions as failed")

@@ -26,23 +26,19 @@ spec:
       serviceAccountName: {{ include "aurora.fullname" . }}-celery-worker
       automountServiceAccountToken: false
       securityContext:
-        runAsNonRoot: true
-        runAsUser: 1000
-        runAsGroup: 1000
-        fsGroup: 1000
+        {{- include "aurora.podSecurityContext" (dict "service" "celeryWorker" "global" $ "defaults" (dict "runAsUser" 1000 "runAsGroup" 1000 "fsGroup" 1000)) | nindent 8 }}
       {{- if .Values.image.pullSecrets }}
       imagePullSecrets:
         {{- toYaml .Values.image.pullSecrets | nindent 8 }}
       {{- end }}
+      {{- include "aurora.scheduling" (dict "service" "celeryWorker" "global" $) | nindent 6 }}
       containers:
         - name: celery-worker
           image: "{{ .Values.image.registry }}/aurora-server:{{ .Values.image.tag }}"
           imagePullPolicy: IfNotPresent
           command: ["celery", "-A", "celery_config", "worker", "--loglevel=info", "--pidfile=/tmp/celery-worker.pid"]
           securityContext:
-            allowPrivilegeEscalation: false
-            capabilities:
-              drop: ["ALL"]
+            {{- include "aurora.containerSecurityContext" (dict "service" "celeryWorker" "global" $ "defaults" (dict)) | nindent 12 }}
           envFrom:
             - configMapRef:
                 name: {{ include "aurora.fullname" . }}-config

@@ -1,92 +1,63 @@
-# AWS Security Hub Webhook Integration
+# AWS Security Hub & Audit Integration
 
-This document outlines the architecture, flow, and schema of the strictly verified Amazon EventBridge webhook integration for AWS Security Hub.
+This feature bridges **AWS Security Hub** (including Amazon GuardDuty, Macie, Inspector, and IAM Access Analyzer) directly into the Aurora platform. It enables DevSecOps and SRE teams to natively ingest, track, and triage AWS security audits directly within Aurora's overarching incident management ecosystem.
 
-## High-Level Architecture
-Aurora ingests security findings from AWS via an inbound Webhook (HTTP POST) triggered by an Amazon EventBridge API Destination. 
-The integration utilizes a "Human-in-the-Loop" triage system, strictly ensuring zero autonomous remediation.
+## How This Enables AWS Security Auditing
 
-1. **Amazon EventBridge** triggers a POST to `/api/v1/aws/securityhub/webhook/<org_id>`
-2. **Flask Route** validates the payload and the securely-matched API Key.
-3. **Prometheus Metrics** measure latency, successful ingestions, and failures.
-4. **Celery Worker** extracts the finding asynchronously.
-5. **AI triage agent** constructs a summary and recommended remediation flow.
-6. **Postgres** securely UPSERTS the modified entity, ignoring noise or dupes.
+AWS Security Hub centralizes hundreds of security findings across massive cloud environments. The Aurora integration automatically funnels these complex audit events via **Amazon EventBridge webhooks**. 
 
----
+When a finding (e.g., *Public S3 Bucket detected by Macie* or *Cryptocurrency mining detected by GuardDuty*) triggers in AWS:
+1. It is seamlessly pushed to Aurora in real-time.
+2. Aurora inherently maps the finding to the exact tenant (`org_id`).
+3. An **Agentic AI Triage** layer automatically intercepts the raw JSON finding, summarizes the true risk, and drafts a suggested remediation plan.
+4. The audit is safely materialized in Aurora's database, waiting for a human engineer to review and approve the fix natively in the UI.
 
-## 1. Routing & Security (`securityhub_routes.py`)
-
-**Path**: `POST /aws/securityhub/webhook/<org_id>`
-
-### API Key Validation
-The webhook is strictly isolated using `X-Api-Key` HTTP headers.
-- **Why no `.env` keys?** To support Multi-Tenant architecture, Aurora parses the `<org_id>` URL parameter and executes a fast query against the Postgres `user_tokens` table.
-- **Timing Attacks Prevented**: Validation natively uses Python's `hmac.compare_digest()` to completely protect against timing-based enumeration attacks.
-- **Dev Bypass**: A development-only bypass exists `DEV_SECURITYHUB_API_KEY` but is thoroughly neutered in production via absolute checking against `FLASK_ENV == "development"`.
-
-### Metrics Telemetry
-We use `prometheus_client` to expose metric vectors:
-- `aws_securityhub_events_received_total`: Increments immediately upon passing the Auth gate.
-- `aws_securityhub_events_failed_total`: Categorized by internal logic failures (`missing_api_key`, `invalid_source`). 
-- `aws_securityhub_processing_latency_seconds`: `Histogram` tracking the API's immediate JSON processing delays before asynchronous handoff.
+This prevents engineers from repeatedly logging into the AWS Console to hunt down audits and instead democratizes security visibility.
 
 ---
 
-## 2. Background Task Execution (`tasks.py`)
+## Codebase Blueprint: What Was Built
 
-To prevent blocking the HTTP process, all payload mutation processing happens within `@shared_task def process_securityhub_finding()`.
+To ensure highly reliable and secure AWS auditing capabilities, the following architectures were introduced into the codebase:
 
-### Fault Tolerance & Reliability
-- **Retry Semantics**: Broad `exceptions` are caught, logged, and re-raised (`raise`). Celery uses this exit status to gracefully retry the payload.
-- **Type-Safety Assurance**: Malformed AWS JSON schemas where `.findings` iterates primitive strings instead of proper `dict` payloads will gracefully loop `continue` avoiding application tier `AttributeErrors`.
+### 1. Database & Persistence (`server/utils/db/db_utils.py`)
+Introduced the `aws_security_findings` schema.
+* **Storage**: Secures critical finding identifiers, severity labels, and the original raw JSON payload.
+* **AI Telemetry**: Houses the computed `ai_summary`, `ai_risk_level`, and `ai_suggested_fix`.
+* **Idempotency**: AWS EventBridge guarantees "at-least-once" delivery, meaning it often sends duplicate events. For this reason, a strict `UNIQUE(org_id, finding_id)` constraint was created.
 
-### Agentic Triage (Human in the loop)
-We utilize `_generate_ai_triage()` to analyze the raw `finding`.
-- **Purpose**: Generates contextually aware `summary`, `risk_level`, and `suggested_fix`.
-- **Limit**: Strictly prevents autonomous AWS actions.
+### 2. High-Performance Webhook Endpoint (`server/routes/aws/securityhub_routes.py`)
+Introduced the `POST /aws/securityhub/webhook/<org_id>` listener.
+* **API Security**: The endpoint parses an inbound `x-api-key` header mapped statically to the `user_tokens` table. It utilizes `hmac` constant-time verification to safeguard your platform against timing-based cryptographic attacks by rogue agents attempting to forge audits.
+* **Dev/Prod Isolation**: Ensures the local `DEV_SECURITYHUB_API_KEY` cannot silently bypass production checks if inadvertently left inside `.env`.
+* **Prometheus Observability**: Embedded `Counter` and `Histogram` metrics to natively track `aws_securityhub_events_received_total` and latency, enabling real-time Grafana observation of the integration's health.
 
----
+### 3. Asynchronous Worker & AI Triage (`server/routes/aws/tasks.py`)
+Routing logic immediately offloads processing into Celery via `@shared_task def process_securityhub_finding`.
+* **Type-Safe Extraction**: Rigorously validates finding topologies before parsing elements `get("Id")` and `get("Severity")` to prevent upstream schema changes from crashing the worker threads.
+* **Postgres UPSERT**: Rather than failing entirely when AWS updates an audit (e.g., marking a finding as "RESOLVED"), the worker issues an `ON CONFLICT DO UPDATE SET` query. The database flawlessly mutates the finding inline.
+* **Failed Retry Semantics**: Transient database locks raise explicit errors to the message broker, seamlessly allowing Celery to retry inserting the audit. 
 
-## 3. Database Schema & Idempotency (`utils/db/db_utils.py`)
-
-A new table `aws_security_findings` enforces uniqueness against noisy Amazon pipelines.
-
-```sql
-CREATE TABLE IF NOT EXISTS aws_security_findings (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    org_id VARCHAR(255) NOT NULL,
-    finding_id VARCHAR(255) NOT NULL,
-    source VARCHAR(200),
-    title TEXT,
-    severity_label VARCHAR(100),
-    payload JSONB,
-    ai_summary TEXT,
-    ai_risk_level VARCHAR(100),
-    ai_suggested_fix TEXT,
-    remediation_approved BOOLEAN DEFAULT FALSE,
-    received_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE(org_id, finding_id)
-);
-```
-
-### Idempotency Behavior
-`tasks.py` executes an UPSERT utilizing:
-```sql
-ON CONFLICT (org_id, finding_id) DO UPDATE SET
-    title = EXCLUDED.title,
-    severity_label = EXCLUDED.severity_label,
-    payload = EXCLUDED.payload,
-    updated_at = NOW()
-```
-If AWS pushes state updates (e.g. GuardDuty severity changed from MEDIUM to HIGH), the exact row mutates `updated_at` securely without triggering massive `INSERT` duplication.
+### 4. Dependency Injection (`server/requirements.txt`)
+Added `prometheus-client>=0.20.0` securely to backend deployment dependencies to resolve local uninstalled instances ensuring native execution upon container rebuilds.
 
 ---
 
-## 4. Dependencies
-Added robust dependency management for the newly integrated Route metrics directly inside `server/requirements.txt`:
-```ini
-prometheus-client>=0.20.0
-```
-This resolves internal virtual environment tracking deficits and ensures the entire Python runtime starts cleanly on Kubernetes/Docker initializations.
+## Setting Up Your AWS Environment
+
+To actively feed audits into this system:
+
+1. **Obtain your Webhook Details**
+   - Provide your Aurora App URL and append your destination: `https://<YOUR-DOMAIN>/api/v1/aws/securityhub/webhook/<YOUR_ORG_ID>`
+   - Map a generated API key into your specific tenant (`user_tokens` row where provider is `aws_securityhub`).
+2. **AWS API Destination Setup**
+   - Navigate to Amazon EventBridge -> **API Destinations**.
+   - Create a new connection and set your API Key under "Authorization header" (Header name: `x-api-key`).
+3. **AWS EventBridge Rule**
+   - Instruct EventBridge to capture audits utilizing a catch-all pattern matching: 
+     ```json
+     { "source": ["aws.securityhub"] }
+     ```
+   - Set the destination to the Aurora API Destination created above.
+
+Your Aurora application is now actively serving as the brain of your AWS Security tracking network!

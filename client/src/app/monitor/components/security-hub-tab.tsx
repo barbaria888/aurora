@@ -34,7 +34,7 @@ function severityBadge(severity: string | null) {
 
 export default function SecurityHubTab({ }: { period?: string }) {
   const { data: findings = [], isLoading } = useQuery<SecurityFinding[]>(
-    '/api/v1/aws/securityhub/findings?limit=50',
+    '/api/aws/securityhub/findings?limit=50',
     jsonFetcher,
     { staleTime: 30_000, revalidateOnFocus: true }
   );

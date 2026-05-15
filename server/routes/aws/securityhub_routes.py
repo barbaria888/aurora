@@ -12,7 +12,7 @@ from psycopg2.extras import RealDictCursor
 from utils.db.connection_pool import db_pool
 from .tasks import process_securityhub_finding
 from utils.web.cors_utils import create_cors_response
-from utils.auth.rbac_decorators import require_auth_only
+from utils.auth.rbac_decorators import require_permission
 from utils.auth.stateless_auth import get_org_id_from_request
 
 logger = logging.getLogger(__name__)
@@ -111,13 +111,8 @@ def webhook(org_id: str):
 
     return jsonify({"received": True}), 200
 
-@securityhub_bp.route("/findings", methods=["OPTIONS"])
-def get_findings_options():
-    """Handle CORS preflight OPTIONS requests for findings endpoint."""
-    return create_cors_response()
-
 @securityhub_bp.route("/findings", methods=["GET"])
-@require_auth_only
+@require_permission("connectors", "read")
 def get_findings(user_id):
     """
     Fetch AWS Security Hub findings for the authenticated user's organization.

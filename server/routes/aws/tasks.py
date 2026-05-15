@@ -5,6 +5,7 @@ import logging
 from celery import shared_task
 from psycopg2.extras import Json
 from utils.db.connection_pool import db_pool
+from utils.log_sanitizer import sanitize
 
 logger = logging.getLogger(__name__)
 
@@ -114,8 +115,8 @@ def process_securityhub_finding(payload: dict, org_id: str):
                     saved_count += 1
             
             conn.commit()
-            logger.info(f"[SECURITY_HUB] Successfully processed & UPSERTED {saved_count} findings for org {org_id}")
+            logger.info("[SECURITY_HUB] Successfully processed & UPSERTED %d findings for org %s", saved_count, sanitize(org_id))
 
-    except Exception as exc:
+    except Exception:
         logger.exception("[SECURITY_HUB] Failed to process findings into DB")
         raise

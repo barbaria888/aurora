@@ -14,6 +14,7 @@ from .tasks import process_securityhub_finding
 from utils.web.cors_utils import create_cors_response
 from utils.auth.rbac_decorators import require_permission
 from utils.auth.stateless_auth import get_org_id_from_request
+from utils.log_sanitizer import sanitize
 
 logger = logging.getLogger(__name__)
 
@@ -68,7 +69,7 @@ def _validate_api_key(org_id: str, api_key: str) -> bool:
 def _abort_webhook(reason: str, msg: str, status_code: int, org_id: str):
     """Helper to reduce code duplication for webhook validation failures."""
     EVENTBRIDGE_EVENTS_FAILED.labels(reason=reason).inc()
-    logger.warning(f"[SECURITY_HUB] {msg} for org {org_id}")
+    logger.warning("[SECURITY_HUB] %s for org %s", msg, sanitize(org_id))
     return jsonify({"error": msg}), status_code
 
 @securityhub_bp.route("/webhook/<org_id>", methods=["OPTIONS"])
@@ -98,13 +99,13 @@ def webhook(org_id: str):
         return _abort_webhook("invalid_source", "Invalid event source. Must be aws.securityhub", 400, org_id)
 
     EVENTBRIDGE_EVENTS_RECEIVED.inc()
-    logger.info(f"[SECURITY_HUB] Received valid EventBridge webhook for org {org_id}")
+    logger.info("[SECURITY_HUB] Received valid EventBridge webhook for org %s", sanitize(org_id))
 
     try:
         # Enqueue background task to process and parse the findings
         process_securityhub_finding.delay(payload, org_id)
-    except Exception as e:
-        logger.exception(f"[SECURITY_HUB] Enqueue failure for org {org_id}")
+    except Exception:
+        logger.exception("[SECURITY_HUB] Enqueue failure for org %s", sanitize(org_id))
         EVENTBRIDGE_EVENTS_FAILED.labels(reason="enqueue_failure").inc()
         return jsonify({"error": "Failed to enqueue processing task"}), 500
 

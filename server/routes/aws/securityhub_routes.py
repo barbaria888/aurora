@@ -65,38 +65,37 @@ def _validate_api_key(org_id: str, api_key: str) -> bool:
         logger.exception("[SECURITY_HUB] Failed to validate API key: %s", exc)
         return False
 
-@securityhub_bp.route("/webhook/<org_id>", methods=["POST", "OPTIONS"])
+def _abort_webhook(reason: str, msg: str, status_code: int, org_id: str):
+    """Helper to reduce code duplication for webhook validation failures."""
+    EVENTBRIDGE_EVENTS_FAILED.labels(reason=reason).inc()
+    logger.warning(f"[SECURITY_HUB] {msg} for org {org_id}")
+    return jsonify({"error": msg}), status_code
+
+@securityhub_bp.route("/webhook/<org_id>", methods=["OPTIONS"])
+def webhook_options(org_id: str):
+    """Handle CORS preflight OPTIONS requests for the webhook endpoint."""
+    return create_cors_response()
+
+@securityhub_bp.route("/webhook/<org_id>", methods=["POST"])
 @EVENTBRIDGE_PROCESSING_LATENCY.time()
 def webhook(org_id: str):
     """
     Handle POST requests for AWS Security Hub EventBridge webhooks.
     Includes API key validation and enqueues background processing.
     """
-    if request.method == "OPTIONS":
-        return create_cors_response()
-
     api_key = request.headers.get("x-api-key")
     if not api_key:
-        EVENTBRIDGE_EVENTS_FAILED.labels(reason="missing_api_key").inc()
-        logger.warning(f"[SECURITY_HUB] Missing x-api-key header for org {org_id}")
-        return jsonify({"error": "Missing x-api-key header"}), 401
+        return _abort_webhook("missing_api_key", "Missing x-api-key header", 401, org_id)
 
     if not _validate_api_key(org_id, api_key):
-        EVENTBRIDGE_EVENTS_FAILED.labels(reason="invalid_api_key").inc()
-        logger.warning(f"[SECURITY_HUB] Invalid API Key for org {org_id}")
-        return jsonify({"error": "Invalid API Key"}), 403
+        return _abort_webhook("invalid_api_key", "Invalid API Key", 403, org_id)
 
     payload = request.get_json(silent=True)
     if not payload:
-        EVENTBRIDGE_EVENTS_FAILED.labels(reason="invalid_json").inc()
-        logger.warning(f"[SECURITY_HUB] Invalid JSON payload for org {org_id}")
-        return jsonify({"error": "Invalid JSON payload"}), 400
+        return _abort_webhook("invalid_json", "Invalid JSON payload", 400, org_id)
 
-    source = payload.get("source")
-    if source != "aws.securityhub":
-        EVENTBRIDGE_EVENTS_FAILED.labels(reason="invalid_source").inc()
-        logger.warning(f"[SECURITY_HUB] Invalid source provided for org {org_id}")
-        return jsonify({"error": "Invalid event source. Must be aws.securityhub"}), 400
+    if payload.get("source") != "aws.securityhub":
+        return _abort_webhook("invalid_source", "Invalid event source. Must be aws.securityhub", 400, org_id)
 
     EVENTBRIDGE_EVENTS_RECEIVED.inc()
     logger.info(f"[SECURITY_HUB] Received valid EventBridge webhook for org {org_id}")

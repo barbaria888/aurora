@@ -64,10 +64,13 @@ def process_securityhub_finding(payload: dict, org_id: str):
         logger.warning("[SECURITY_HUB] No findings found in payload detail.")
         return
 
+    from utils.auth.stateless_auth import set_rls_context
+
     saved_count = 0
     try:
         with db_pool.get_admin_connection() as conn:
             with conn.cursor() as cursor:
+                set_rls_context(cursor, conn, org_id, log_prefix="[SECURITY_HUB]")
                 for finding in findings:
                     if not isinstance(finding, dict):
                         continue

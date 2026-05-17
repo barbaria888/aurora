@@ -21,24 +21,28 @@ This prevents engineers from repeatedly logging into the AWS Console to hunt dow
 To ensure highly reliable and secure AWS auditing capabilities, the following architectures were introduced into the codebase:
 
 ### 1. Database & Persistence (`server/utils/db/db_utils.py`)
+
 Introduced the `aws_security_findings` schema.
 * **Storage**: Secures critical finding identifiers, severity labels, and the original raw JSON payload.
 * **AI Telemetry**: Houses the computed `ai_summary`, `ai_risk_level`, and `ai_suggested_fix`.
 * **Idempotency**: AWS EventBridge guarantees "at-least-once" delivery, meaning it often sends duplicate events. For this reason, a strict `UNIQUE(org_id, finding_id)` constraint was created.
 
 ### 2. High-Performance Webhook Endpoint (`server/routes/aws/securityhub_routes.py`)
+
 Introduced the `POST /aws/securityhub/webhook/<org_id>` listener.
 * **API Security**: The endpoint parses an inbound `x-api-key` header mapped statically to the `user_tokens` table. It utilizes `hmac` constant-time verification to safeguard your platform against timing-based cryptographic attacks by rogue agents attempting to forge audits.
 * **Dev/Prod Isolation**: Ensures the local `DEV_SECURITYHUB_API_KEY` cannot silently bypass production checks if inadvertently left inside `.env`.
 * **Prometheus Observability**: Embedded `Counter` and `Histogram` metrics to natively track `aws_securityhub_events_received_total` and latency, enabling real-time Grafana observation of the integration's health.
 
 ### 3. Asynchronous Worker & AI Triage (`server/routes/aws/tasks.py`)
+
 Routing logic immediately offloads processing into Celery via `@shared_task def process_securityhub_finding`.
 * **Type-Safe Extraction**: Rigorously validates finding topologies before parsing elements `get("Id")` and `get("Severity")` to prevent upstream schema changes from crashing the worker threads.
 * **Postgres UPSERT**: Rather than failing entirely when AWS updates an audit (e.g., marking a finding as "RESOLVED"), the worker issues an `ON CONFLICT DO UPDATE SET` query. The database flawlessly mutates the finding inline.
 * **Failed Retry Semantics**: Transient database locks raise explicit errors to the message broker, seamlessly allowing Celery to retry inserting the audit. 
 
 ### 4. Dependency Injection (`server/requirements.txt`)
+
 Added `prometheus-client>=0.20.0` securely to backend deployment dependencies to resolve local uninstalled instances ensuring native execution upon container rebuilds.
 
 ---
@@ -55,9 +59,18 @@ To actively feed audits into this system:
    - Create a new connection and set your API Key under "Authorization header" (Header name: `x-api-key`).
 3. **AWS EventBridge Rule**
    - Instruct EventBridge to capture audits utilizing a catch-all pattern matching: 
+
      ```json
-     { "source": ["aws.securityhub"] }
+     {
+       "source": [
+         "aws.securityhub"
+       ],
+       "detail-type": [
+         "Security Hub Findings - Imported"
+       ]
+     }
      ```
+
    - Set the destination to the Aurora API Destination created above.
 
 Your Aurora application is now actively serving as the brain of your AWS Security tracking network!

@@ -78,10 +78,27 @@ image:
   #   - name: regcred
 
 # ------------------------------------------------------------------------------
+# Autoscaling (HPA)
+# ------------------------------------------------------------------------------
+autoscaling:
+  server:
+    enabled: false
+    minReplicas: 2
+    maxReplicas: 6
+    targetCPU: 70
+    targetMemory:         # optional — set to e.g. 80 to also scale on memory
+  celeryWorker:
+    enabled: false
+    minReplicas: 2
+    maxReplicas: 6
+    targetCPU: 70
+
+# ------------------------------------------------------------------------------
 # Replica counts per service
 # ------------------------------------------------------------------------------
 replicaCounts:
   # Scalable services (can increase for load balancing)
+  # NOTE: When autoscaling is enabled above, these values are ignored — HPA's minReplicas takes over.
   server: 1          # API server (Flask) - stateless, can scale
   mcp: 1             # MCP server (streamable-http on 8811)
   celeryWorker: 1    # Background task workers - stateless, can scale
@@ -186,6 +203,13 @@ config:
   GUARDRAILS_SIGMA_ENABLED: "true"
   # Safety judge / input rail model (provider/model format). Empty = use MAIN_MODEL.
   GUARDRAILS_LLM_MODEL: ""
+
+  # --- Concurrency & Pool Sizing ---
+  GUNICORN_WORKERS: "2"
+  GUNICORN_THREADS: "4"
+  CELERY_CONCURRENCY: "4"
+  DB_POOL_MIN: "2"
+  DB_POOL_MAX: "20"
 
   # --- Performance & Caching ---
   AURORA_SETUP_CACHE_ENABLED: "true"

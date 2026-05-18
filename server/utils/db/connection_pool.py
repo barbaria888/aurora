@@ -45,9 +45,8 @@ class DatabaseConnectionPool:
             if pg_sslrootcert:
                 self.db_params['sslrootcert'] = pg_sslrootcert
 
-        # Connection pool configuration
-        self.min_connections = 1
-        self.max_connections = 50
+        self.min_connections = int(os.getenv('DB_POOL_MIN', '2'))
+        self.max_connections = int(os.getenv('DB_POOL_MAX', '20'))
 
         # Single connection pool
         self._pool: Optional[psycopg2.pool.ThreadedConnectionPool] = None

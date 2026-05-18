@@ -123,7 +123,9 @@ async def _synthesis(state: State) -> dict:
         # The user-facing summary is appended below as an AIMessage that the
         # existing chat pipeline handles.
         llm = create_chat_model(model=ModelConfig.RCA_ORCHESTRATOR_MODEL, streaming=False)
-        structured = llm.with_structured_output(SynthesisDecision, include_raw=True)
+        structured = llm.with_structured_output(
+            SynthesisDecision, include_raw=True, method="function_calling"
+        )
 
         # Pass available role names to constrain follow-up dispatch — prevents
         # the LLM from hallucinating role names that aren't in the registry.

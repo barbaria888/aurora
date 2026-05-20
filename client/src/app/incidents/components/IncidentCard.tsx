@@ -46,15 +46,15 @@ function sourceDisplayName(source: string): string {
 }
 
 interface IncidentCardProps {
-  incident: Incident;
-  duration: string;
-  showThoughts: boolean;
-  onToggleThoughts: () => void;
-  citations?: Citation[];
-  onRefresh?: () => void;
+  readonly incident: Incident;
+  readonly duration: string;
+  readonly showThoughts: boolean;
+  readonly onToggleThoughts: () => void;
+  readonly citations?: Citation[];
+  readonly onRefresh?: () => void;
 }
 
-function StatusPill({ status }: { status: AuroraStatus }) {
+function StatusPill({ status }: { readonly status: AuroraStatus }) {
   switch (status) {
     case 'running':
       return (
@@ -123,11 +123,14 @@ export default function IncidentCard({ incident, duration, showThoughts, onToggl
   const showSeverity = (alert.severity && (alert.severity as string) !== 'unknown') || incident.status === 'analyzed';
   const sourceIconSrc = alert.source === 'chat' ? null : `/${alert.source}.svg`;
 
+  const [justResolved, setJustResolved] = useState(false);
+
   const handleResolveIncident = async () => {
     setResolvingIncident(true);
     try {
       await incidentsService.resolveIncident(incident.id);
       toast({ title: 'Incident resolved', description: 'Postmortem is being generated in the background.' });
+      setJustResolved(true);
       setShowPostmortem(true);
       onRefresh?.();
     } catch (e) {
@@ -765,6 +768,7 @@ export default function IncidentCard({ incident, duration, showThoughts, onToggl
         incidentTitle={incident.alert.title}
         isVisible={showPostmortem}
         onClose={() => setShowPostmortem(false)}
+        justResolved={justResolved}
       />
 
       {/* Infrastructure Visualization */}

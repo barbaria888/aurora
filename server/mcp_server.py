@@ -324,11 +324,27 @@ register_prompts(mcp)
 
 from aurora_mcp.registry import (  # noqa: E402
     TIER2_TOOLS,
+    _get_cached_connector_status,
     gated_tool_visible,
+    parse_and_cache_connector_status,
 )
 
 _GATED_NAMES = {spec.name: spec for spec in TIER2_TOOLS}
 _original_list_tools = mcp.list_tools  # bound method captured before re-register
+
+
+async def _refresh_connector_cache(user_id: str) -> None:
+    """Fetch connector status from the Flask backend and cache it.
+
+    The backend's /api/connectors/status handles RLS correctly (Flask context),
+    so this is authoritative. Maps provider names to skill IDs (they're the
+    same in practice — e.g. "github" -> "github", "gcp" -> "gcp").
+    """
+    try:
+        data = await _api("GET", "/api/connectors/status")
+        parse_and_cache_connector_status(user_id, data)
+    except Exception:
+        logger.exception("connector cache refresh failed for user=%s", user_id)
 
 
 @mcp._mcp_server.list_tools()
@@ -345,6 +361,11 @@ async def _filtered_list_tools():  # type: ignore[no-redef]
             "falling back to always-on tools only"
         )
         return [t for t in all_tools if t.name not in _GATED_NAMES]
+
+    # Populate connector cache from the backend API so that gated_tool_visible
+    # (and downstream search_tools/call_tool) use the authoritative status.
+    if _get_cached_connector_status(user_id) is None:
+        await _refresh_connector_cache(user_id)
 
     filtered = []
     for t in all_tools:

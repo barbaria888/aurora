@@ -47,7 +47,10 @@ _viz_triggers: TTLCache = TTLCache(maxsize=100, ttl=3600)  # 1 hour TTL
 # Strong references for fire-and-forget tasks so they aren't GC'd before completion.
 _background_tasks: "set[asyncio.Task]" = set()
 from chat.backend.constants import MAX_TOOL_OUTPUT_CHARS
-from .github_apply_fix_tool import github_apply_fix, GitHubApplyFixArgs
+# github_apply_fix is intentionally NOT exposed as an LLM-callable tool — it
+# creates a PR and must require explicit user approval via the Incidents UI's
+# "Create Pull Request" button. The route handler in incidents_routes.py
+# imports github_apply_fix directly.
 from .gitlab_tool import gitlab_tool, GitLabToolArgs
 from routes.gitlab.gitlab_api_utils import is_gitlab_connected
 from .cloud_exec_tool import cloud_exec
@@ -1296,7 +1299,6 @@ Once you identify which account has the issue, pass account_id (e.g. 'account') 
         (jenkins_rca, "jenkins_rca"),
         (cloudbees_rca, "cloudbees_rca"),
         (spinnaker_rca, "spinnaker_rca"),
-        (github_apply_fix, "github_apply_fix"),
         (cloud_exec_wrapper, "cloud_exec"),
         (terminal_exec, "terminal_exec"),
         (tailscale_ssh, "tailscale_ssh"),
@@ -1364,7 +1366,7 @@ Once you identify which account has the issue, pass account_id (e.g. 'account') 
             effective_func = _github_rca_pinned
 
         # Apply forced context wrapper for critical tools that should never have parameters mixed up
-        if name in ['iac_tool', 'github_commit', 'github_fix', 'github_apply_fix']:
+        if name in ['iac_tool', 'github_commit', 'github_fix']:
             context_wrapped = with_forced_context(effective_func)
             logging.info(f"Applied with_forced_context decorator to {name}")
         else:
@@ -1427,7 +1429,10 @@ Once you identify which account has the issue, pass account_id (e.g. 'account') 
                     "Suggest a code fix for an identified issue during RCA. "
                     "Use this when you identify a specific code change that would fix the root cause. "
                     "The fix is stored for user review before being applied. "
-                    "Parameters: file_path (path in repo), suggested_content (complete fixed file), "
+                    "Parameters: file_path (path in repo), "
+                    "edits (list of anchored search-and-replace edits: each has old_string + new_string; "
+                    "old_string must match the current file exactly, with enough surrounding context to be unique; "
+                    "set replace_all=true if you want every occurrence replaced), "
                     "fix_description (what this fix does), root_cause_summary (why this change is needed). "
                     "Optional: repo (owner/repo format), commit_message, branch."
                 ),
@@ -1493,19 +1498,6 @@ Once you identify which account has the issue, pass account_id (e.g. 'account') 
                     "Use during RCA to check if deployments correlate with incidents."
                 ),
                 args_schema=SpinnakerRCAArgs
-            )
-        elif name == 'github_apply_fix':
-            tool = StructuredTool.from_function(
-                func=final_func,
-                name=name,
-                description=(
-                    "Apply an approved fix suggestion by creating a branch and PR. "
-                    "Use this after the user has reviewed and approved a fix suggestion. "
-                    "Parameters: suggestion_id (ID of the fix suggestion to apply), "
-                    "use_edited_content (boolean, default true - use user-edited content if available), "
-                    "target_branch (optional base branch for PR, defaults to main)."
-                ),
-                args_schema=GitHubApplyFixArgs
             )
         elif name == 'trigger_rca':
             tool = StructuredTool.from_function(

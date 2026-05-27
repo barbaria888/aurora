@@ -6,7 +6,8 @@ logger = logging.getLogger(__name__)
 
 # Reduce verbosity of specific noisy loggers
 logging.getLogger("langchain").setLevel(logging.WARNING)
-logging.getLogger("websockets").setLevel(logging.WARNING)  
+logging.getLogger("websockets").setLevel(logging.WARNING)
+logging.getLogger("websockets.server").setLevel(logging.CRITICAL)
 logging.getLogger("weaviate").setLevel(logging.WARNING)
 logging.getLogger("redis").setLevel(logging.WARNING)
 logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -174,6 +175,12 @@ async def _ws_reject(websocket, text: str, *, close_reason: str = ""):
 
 def _warm_user_caches(user_id: str):
     """Kick off background tasks that pre-warm per-user caches."""
+    try:
+        uuid.UUID(user_id)
+    except (ValueError, TypeError):
+        logger.debug(f"Skipping cache warmup for non-UUID user_id: {user_id}")
+        return
+
     _cost_warm_task = asyncio.create_task(update_api_cost_cache_async(user_id))
     _background_tasks.add(_cost_warm_task)
     _cost_warm_task.add_done_callback(_background_tasks.discard)
@@ -1547,6 +1554,11 @@ async def handle_connection(websocket) -> None:
             # Resolve incident_id — reuse result from RBAC check to avoid duplicate query
             _incident_id = _rbac_incident_id
 
+            from utils.incidents import fetch_incident_start_time
+            _incident_start_time = fetch_incident_start_time(
+                user_id, _incident_id, log_prefix="[Chatbot:StartTime]"
+            )
+
             # Fetch org tool permissions for gate bypass
             _permitted_tools = None
             try:
@@ -1565,6 +1577,7 @@ async def handle_connection(websocket) -> None:
                 user_id=user_id,
                 session_id=session_id,
                 incident_id=_incident_id,
+                incident_start_time=_incident_start_time,
                 org_id=org_id,
                 provider_preference=provider_preference,
                 selected_project_id=selected_project_id,
@@ -1644,7 +1657,8 @@ async def main():
         ping_interval=20,  # Send ping every 20 seconds
         ping_timeout=10,   # Wait 10 seconds for pong response
         max_size=10 * 1024 * 1024,  # 10MB max message size
-        compression=None   # Disable compression to avoid frame issues
+        compression=None,  # Disable compression to avoid frame issues
+        logger=logging.getLogger("websockets.server"),
     ):
         logger.info(f"WebSocket server listening on port {WS_PORT}")
         await asyncio.Future()

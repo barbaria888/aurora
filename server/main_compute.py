@@ -220,6 +220,7 @@ _OPEN_PREFIXES = (
     "/aws/setup-role",
     "/aws/setup-script-ps1",
     "/aws/setup-role-ps1",
+    "/aws/cloudwatch/webhook/",
 )
 
 @app.before_request
@@ -649,9 +650,24 @@ def list_api_routes():
 # ============================================================================
 
 def initialize_app():
-    # Initialize database
-    ensure_database_exists()
-    initialize_tables()
+    # Acquire a session-level advisory lock so that concurrent gunicorn workers
+    # serialise DDL (CREATE TABLE / ALTER TABLE) instead of deadlocking.
+    from utils.db.db_utils import connect_to_db_as_admin
+    conn = connect_to_db_as_admin()
+    try:
+        conn.autocommit = True
+        with conn.cursor() as cur:
+            cur.execute("SELECT pg_advisory_lock(42)")
+        conn.autocommit = False
+        try:
+            ensure_database_exists()
+            initialize_tables()
+        finally:
+            conn.autocommit = True
+            with conn.cursor() as cur:
+                cur.execute("SELECT pg_advisory_unlock(42)")
+    finally:
+        conn.close()
 
     # Initialize Casbin RBAC enforcer (seeds default policies on first run)
     try:
@@ -685,10 +701,3 @@ def initialize_app():
 
 # Always run initialization when module is imported (for Gunicorn and direct execution)
 initialize_app()
-
-if __name__ == "__main__":
-    # Development mode: run Flask's built-in server
-    # Port configurable via FLASK_PORT env var (set in .env file)
-    # Note: Default is 5080 to avoid conflict with macOS AirPlay Receiver (port 5000)
-    port = int(os.getenv("FLASK_PORT"))
-    app.run(host="0.0.0.0", port=port, debug=False)

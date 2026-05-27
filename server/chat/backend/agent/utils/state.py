@@ -11,6 +11,7 @@ class State(BaseModel):
     user_id: Optional[str] = None
     session_id: Optional[str] = None  # Add session ID for tracking chat sessions
     incident_id: Optional[str] = None  # Incident ID for RCA sessions
+    incident_start_time: Optional[str] = None  # ISO 8601 timestamp from incidents.started_at
     org_id: Optional[str] = None  # Org ID for tenant-scoped telemetry
     provider_preference: Optional[List[str]] = None  # Must be explicitly set, e.g. ["gcp", "aws", "azure"]
     selected_project_id: Optional[str] = None  # Selected project ID from frontend UI
@@ -21,6 +22,9 @@ class State(BaseModel):
     trigger_action_id: Optional[str] = None  # Action ID when user triggered /action command
     is_background: bool = (
         False  # True for background chats (webhook-triggered, no user interaction)
+    )
+    is_postmortem_action: bool = (
+        False  # True only when the session is the dedicated "Generate Postmortem" action
     )
     rca_context: Optional[Dict[str, Any]] = (
         None  # RCA-specific context (source, providers) - used by prompt_builder
@@ -43,5 +47,10 @@ class State(BaseModel):
     subagent_inputs: List[Dict[str, Any]] = []
     finding_refs: Annotated[List[Dict[str, Any]], operator.add] = []
     synthesis_wave: int = 0
+    # Per-wave decisions from the synthesis node (rationale, follow-ups). Used
+    # to feed the orchestrator's own prior thoughts back into later synthesis
+    # waves so the summary is grounded in the full investigation arc, not just
+    # the most recent sub-agent findings.
+    synthesis_history: List[Dict[str, Any]] = []
 
     model_config = ConfigDict(arbitrary_types_allowed=True)

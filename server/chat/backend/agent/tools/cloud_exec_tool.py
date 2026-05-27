@@ -204,7 +204,7 @@ def setup_aws_environment_isolated(user_id: str, selected_region: str | None = N
             else:
                 aws_conn = get_user_aws_connection(user_id)
             if not aws_conn or not aws_conn.get('role_arn'):
-                logger.error("User %s does not have an active AWS connection", user_id)
+                logger.error("User %s does not have an active AWS connection", hash_for_log(user_id))
                 return False, None, None, None
 
             conn_region = aws_conn.get("region")
@@ -215,7 +215,7 @@ def setup_aws_environment_isolated(user_id: str, selected_region: str | None = N
             ws = get_or_create_workspace(user_id, "default")
             external_id = ws.get("aws_external_id")
             if not external_id:
-                logger.error("Workspace %s for user %s missing aws_external_id", ws["id"], user_id)
+                logger.error("Workspace %s for user %s missing aws_external_id", hash_for_log(str(ws["id"])), hash_for_log(user_id))
                 return False, None, None, None
 
             current_mode = get_mode_from_context()
@@ -229,7 +229,7 @@ def setup_aws_environment_isolated(user_id: str, selected_region: str | None = N
                 if read_only_role:
                     # Use dedicated read-only role if available
                     role_arn = read_only_role
-                    logger.info("Using AWS read-only role for user %s", user_id)
+                    logger.info("Using AWS read-only role for user %s", hash_for_log(user_id))
                 else:
                     # Apply restrictive session policy to make the role read-only
                     # NOTE: Session policies work as an intersection with base role permissions.
@@ -240,7 +240,7 @@ def setup_aws_environment_isolated(user_id: str, selected_region: str | None = N
                         "Read-only mode enabled for user %s but no read_only_role_arn provided. "
                         "Using session policy fallback. This may fail if the base role lacks read permissions. "
                         "Consider providing a dedicated read-only role for better reliability.",
-                        user_id
+                        hash_for_log(user_id)
                     )
 
             sts_creds = assume_workspace_role(
@@ -260,7 +260,11 @@ def setup_aws_environment_isolated(user_id: str, selected_region: str | None = N
                 "aws_regions": [selected_region or "us-east-1"],
             }
 
-            logger.info("Assumed workspace role for %s, obtained temporary credentials (expires %s)", ws["id"], sts_creds["expiration"])
+            logger.info(
+                "Assumed workspace role for %s in region %s",
+                hash_for_log(str(ws["id"])),
+                selected_region or "us-east-1",
+            )
 
         except Exception as e:
             logger.error("Failed to obtain AWS workspace credentials: %s", e)
@@ -385,12 +389,12 @@ def setup_aws_environments_all_accounts(user_id: str):
     ws = get_or_create_workspace(user_id, "default")
     external_id = ws.get("aws_external_id")
     if not external_id:
-        logger.error("Workspace %s for user %s missing aws_external_id", ws["id"], user_id)
+        logger.error("Workspace %s for user %s missing aws_external_id", hash_for_log(str(ws["id"])), hash_for_log(user_id))
         return []
 
     connections = get_all_user_aws_connections(user_id)
     if not connections:
-        logger.warning("No active AWS connections for user %s", user_id)
+        logger.warning("No active AWS connections for user %s", hash_for_log(user_id))
         return []
 
     current_mode = get_mode_from_context()
@@ -446,7 +450,7 @@ def setup_aws_environments_all_accounts(user_id: str):
 
     logger.info(
         "Assumed roles for %d / %d accounts for user %s",
-        len(account_envs), len(connections), user_id,
+        len(account_envs), len(connections), hash_for_log(user_id),
     )
     return account_envs
 
@@ -509,19 +513,31 @@ def setup_gcp_environment_isolated(user_id: str, selected_project_id: str | None
         is_sa_mode = token_resp.get("auth_type") == GCP_AUTH_TYPE_SA
         auth_method = "service_account" if is_sa_mode else "impersonated"
 
-        # Per-user gcloud config directory so concurrent users don't race on
-        # the same gcloud config/cache files and leak auth state between
-        # sessions. A user_id in Aurora is a UUID, which is already safe to
-        # embed in a filesystem path.
-        cloudsdk_config_dir = f"/tmp/.gcloud-{user_id}"
+        # Use an ephemeral temp directory for CLOUDSDK_CONFIG so no per-user
+        # on-disk gcloud state persists across invocations.  Each call gets its
+        # own directory; the OS reclaims it when the process exits (or earlier
+        # when the caller explicitly calls shutil.rmtree on _gcloud_tmpdir).
+        import atexit, shutil as _shutil
+        cloudsdk_config_dir = tempfile.mkdtemp(prefix=f".gcloud-{user_id}-")
         try:
-            os.makedirs(cloudsdk_config_dir, exist_ok=True)
+            # Write a minimal properties file so gcloud sees an active account.
+            # Without this, gcloud config config-helper (called by
+            # gke-gcloud-auth-plugin on every kubectl invocation) exits with
+            # "You do not currently have an active account selected" even when
+            # GOOGLE_OAUTH_ACCESS_TOKEN is set, because gcloud still validates
+            # that core/account is populated before resolving the token.
+            properties_path = os.path.join(cloudsdk_config_dir, "properties")
+            account_identity = sa_email if sa_email else "aurora-discovery@local"
+            fd = os.open(properties_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w") as _pf:
+                _pf.write(f"[core]\naccount = {account_identity}\n")
         except OSError as mkdir_err:
             logger.warning(
-                "GCP isolated env: could not create per-user CLOUDSDK_CONFIG dir (error_type=%s) — falling back to shared path",
+                "GCP isolated env: could not write CLOUDSDK_CONFIG properties (error_type=%s)",
                 type(mkdir_err).__name__,
             )
-            cloudsdk_config_dir = "/tmp/.gcloud"
+            _shutil.rmtree(cloudsdk_config_dir, ignore_errors=True)
+            return False, None, None, None
 
         isolated_env = {
             "PATH": os.environ.get("PATH", ""),
@@ -531,6 +547,8 @@ def setup_gcp_environment_isolated(user_id: str, selected_project_id: str | None
             "CLOUDSDK_AUTH_ACCESS_TOKEN": access_token,
             "GOOGLE_CLOUD_PROJECT": project_id,
             "CLOUDSDK_CONFIG": cloudsdk_config_dir,
+            # Expose the temp dir path so callers can clean up after use.
+            "_gcloud_tmpdir": cloudsdk_config_dir,
         }
         if is_sa_mode:
             # Point gcloud at a concrete ADC source so it doesn't fall through
@@ -549,6 +567,11 @@ def setup_gcp_environment_isolated(user_id: str, selected_project_id: str | None
 
         logger.info("GCP isolated environment configured (%s)", auth_method)
         logger.info("TIME: setup_gcp_environment_isolated completed in %.2fs", time.perf_counter() - fn_start)
+
+        # Safety-net: register an atexit handler so the tmpdir is always
+        # removed even if the caller forgets to clean it up.  This covers
+        # every call-site, not just discovery_service.py.
+        atexit.register(_shutil.rmtree, cloudsdk_config_dir, ignore_errors=True)
 
         return True, project_id, auth_method, isolated_env
 

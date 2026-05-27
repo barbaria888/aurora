@@ -513,16 +513,17 @@ def get_connected_providers(user_id: str) -> List[str]:
     org_id = resolve_org_id(user_id)
     connected_providers = []
     
+    conn = None
     try:
         conn = connect_to_db_as_user()
         cursor = conn.cursor()
         set_rls_context(cursor, conn, user_id, log_prefix="[ConnectedProviders]")
-        
+
         # Check user_tokens table (OAuth/secret-based providers)
         cursor.execute(
             """
             SELECT DISTINCT provider
-            FROM user_tokens 
+            FROM user_tokens
             WHERE (user_id = %s OR org_id = %s)
               AND secret_ref IS NOT NULL AND is_active = TRUE
             """,
@@ -530,7 +531,7 @@ def get_connected_providers(user_id: str) -> List[str]:
         )
         token_providers = [row[0] for row in cursor.fetchall()]
         connected_providers.extend(token_providers)
-        
+
         # Check user_connections table (role-based connections like AWS)
         cursor.execute(
             """
@@ -542,18 +543,23 @@ def get_connected_providers(user_id: str) -> List[str]:
         )
         connection_providers = [row[0] for row in cursor.fetchall()]
         connected_providers.extend(connection_providers)
-        
+
         cursor.close()
-        conn.close()
-        
+
         # Remove duplicates and return sorted list
         unique_providers = sorted(list(set(connected_providers)))
         logger.debug(f"Found connected providers for user {user_id}: {unique_providers}")
         return unique_providers
-        
+
     except Exception as e:
         logger.error(f"Error getting connected providers for user {user_id}: {e}")
         return []
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 def get_user_email(user_id: str) -> Optional[str]:
@@ -565,14 +571,23 @@ def get_user_email(user_id: str) -> Optional[str]:
     Returns:
         User email address or None if not found
     """
-    import os
     from utils.db.connection_pool import db_pool
-    
+
     try:
-        # Try to get email from user_tokens table first (faster)
         with db_pool.get_admin_connection() as conn:
             with conn.cursor() as cursor:
-                # No RLS needed — user_tokens not RLS-protected
+                # Check users table first (always has email for credential-based accounts)
+                cursor.execute(
+                    "SELECT email FROM users WHERE id = %s AND email IS NOT NULL LIMIT 1",
+                    (user_id,)
+                )
+                result = cursor.fetchone()
+                if result and result[0]:
+                    return result[0]
+
+                # Fallback to user_tokens (OAuth providers store email here)
+                # user_tokens is RLS-protected — set context for Celery paths
+                set_rls_context(cursor, conn, user_id, log_prefix="[get_user_email]")
                 cursor.execute(
                     "SELECT email FROM user_tokens WHERE user_id = %s AND email IS NOT NULL LIMIT 1",
                     (user_id,)
@@ -580,9 +595,7 @@ def get_user_email(user_id: str) -> Optional[str]:
                 result = cursor.fetchone()
                 if result and result[0]:
                     return result[0]
-        
-        # Auth.js doesn't have a separate API - email should be in database
-        # If not found, return None
+
         logger.warning(f"Could not find email for user {user_id}")
         return None
         

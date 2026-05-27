@@ -118,24 +118,10 @@ def initialize_tables():
         with db_pool.get_admin_connection() as conn:
             cursor = conn.cursor()  # No RLS needed — schema migration/DDL
 
-            # Try to acquire advisory lock (non-blocking)
-            cursor.execute("SELECT pg_try_advisory_lock(1234567890);")
-            lock_acquired = cursor.fetchone()[0]
-            
-            if not lock_acquired:
-                # Lock is held - likely by a dead process. Force release stale locks.
-                logging.warning("Advisory lock held by another process, clearing stale locks...")
-                cursor.execute("""
-                    SELECT pg_terminate_backend(pid) 
-                    FROM pg_locks 
-                    WHERE locktype = 'advisory' AND objid = 1234567890 AND pid != pg_backend_pid();
-                """)
-                conn.commit()
-                
-                # Now acquire the lock properly
-                cursor.execute("SELECT pg_advisory_lock(1234567890);")
-                lock_acquired = True
-                logging.info("Advisory lock acquired after clearing stale locks")
+            # Acquire transaction-level advisory lock — blocks until the holder
+            # finishes and auto-releases on commit or rollback, so it can't leak
+            # back into the connection pool.
+            cursor.execute("SELECT pg_advisory_xact_lock(1234567890);")
 
             # Define table creation scripts.
             create_tables = {
@@ -562,6 +548,31 @@ def initialize_tables():
                     );
                     
                     CREATE INDEX IF NOT EXISTS idx_ingestion_in_progress ON cloud_ingestion_state(user_id, provider) WHERE in_progress = TRUE;
+                """,
+                "cloudwatch_alarms": """
+                    CREATE TABLE IF NOT EXISTS cloudwatch_alarms (
+                        id SERIAL PRIMARY KEY,
+                        user_id VARCHAR(255) NOT NULL,
+                        org_id VARCHAR(255),
+                        alarm_name TEXT,
+                        alarm_arn TEXT,
+                        state_value VARCHAR(50),
+                        previous_state_value VARCHAR(50),
+                        reason TEXT,
+                        account_id VARCHAR(50),
+                        region VARCHAR(100),
+                        payload JSONB NOT NULL,
+                        received_at TIMESTAMP NOT NULL,
+                        sns_message_id VARCHAR(255),
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    );
+
+                    ALTER TABLE cloudwatch_alarms ADD COLUMN IF NOT EXISTS sns_message_id VARCHAR(255);
+
+                    CREATE INDEX IF NOT EXISTS idx_cloudwatch_alarms_user_id ON cloudwatch_alarms(user_id, received_at DESC);
+                    CREATE INDEX IF NOT EXISTS idx_cloudwatch_alarms_state ON cloudwatch_alarms(state_value);
+                    CREATE INDEX IF NOT EXISTS idx_cloudwatch_alarms_received_at ON cloudwatch_alarms(received_at DESC);
+                    CREATE UNIQUE INDEX IF NOT EXISTS idx_cloudwatch_alarms_sns_dedup ON cloudwatch_alarms(sns_message_id, user_id) WHERE sns_message_id IS NOT NULL;
                 """,
                 "grafana_alerts": """
                     CREATE TABLE IF NOT EXISTS grafana_alerts (
@@ -1040,6 +1051,13 @@ def initialize_tables():
                     CREATE INDEX IF NOT EXISTS idx_kubectl_tokens_token ON kubectl_agent_tokens(token);
                     CREATE INDEX IF NOT EXISTS idx_kubectl_tokens_status ON kubectl_agent_tokens(status);
                 """,
+                "infrastructure_context": """
+                    CREATE TABLE IF NOT EXISTS infrastructure_context (
+                        org_id VARCHAR(255) PRIMARY KEY,
+                        content TEXT NOT NULL,
+                        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                    );
+                """,
                 "mcp_tokens": """
                     CREATE TABLE IF NOT EXISTS mcp_tokens (
                         id SERIAL PRIMARY KEY,
@@ -1385,6 +1403,7 @@ def initialize_tables():
             rls_tables.append("pagerduty_events")
 
             # Add monitoring tables
+            rls_tables.append("cloudwatch_alarms")
             rls_tables.append("grafana_alerts")
             rls_tables.append("datadog_events")
             rls_tables.append("netdata_alerts")
@@ -2636,6 +2655,7 @@ def initialize_tables():
                 "rca_notification_emails", "splunk_alerts",
                 "jenkins_deployment_events", "dynatrace_problems",
                 "bigpanda_events", "kubectl_agent_tokens",
+                "cloudwatch_alarms",
                 "mcp_tokens",
                 "k8s_pods", "k8s_nodes", "k8s_node_conditions",
                 "k8s_services", "k8s_deployments", "k8s_ingresses",
@@ -2954,13 +2974,6 @@ def initialize_tables():
             conn.commit()
             logging.info("Database tables initialized successfully.")
             cursor.close()
-
-            # Release advisory lock
-            try:
-                with conn.cursor() as unlock_cursor:  # No RLS needed — advisory lock release
-                    unlock_cursor.execute("SELECT pg_advisory_unlock(1234567890);")
-            except Exception as unlock_error:
-                logging.warning(f"Error releasing advisory lock: {unlock_error}")
 
     except Exception as e:
         logging.error(f"Error initializing tables: {e}")

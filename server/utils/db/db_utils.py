@@ -392,7 +392,7 @@ def initialize_tables():
                         read_only_role_arn VARCHAR(512),
                         connection_method VARCHAR(50),
                         region VARCHAR(50),
-                        status VARCHAR(20) DEFAULT 'active', -- active | not_connected | error
+                        status VARCHAR(20) DEFAULT 'active',
                         last_verified_at TIMESTAMP,
                         UNIQUE(user_id, provider, account_id)
                     );

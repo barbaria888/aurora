@@ -188,6 +188,18 @@ const ToolExecutionWidget = ({ tool, className, sendMessage, sendRaw, onToolUpda
   else if (tool.tool_name === "list_slack_channels" || tool.tool_name === "get_channel_history" || tool.tool_name === "get_thread_replies") {
     command = parseSlackCommand(tool.tool_name, normalizedInput)
   }
+  // Alert payload drill-down tool: show the json_path being queried
+  else if (tool.tool_name === "get_alert_field") {
+    try {
+      const parsed = JSON.parse(normalizedInput)
+      const path = parsed.json_path || parsed.kwargs?.json_path || ''
+      if (path) {
+        command = `get_alert_field: ${path}`
+      }
+    } catch {
+      // Keep the precomputed fallback
+    }
+  }
 
   // If command is still JSON blob, use default
   if (typeof command === "string" && command.trim().startsWith("{")) {

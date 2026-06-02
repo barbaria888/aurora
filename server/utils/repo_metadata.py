@@ -141,6 +141,14 @@ def _generate_summary(user_id: str, context: str) -> str:
     from chat.backend.agent.llm import ModelConfig
     from chat.backend.agent.utils.llm_usage_tracker import tracked_invoke
     from langchain_core.messages import HumanMessage
+    from utils.hooks import get_hook
+
+    # Hook: check if LLM call is allowed
+    from utils.auth.stateless_auth import get_org_id_for_user
+    hook_allowed, hook_message = get_hook("before_llm_call")(get_org_id_for_user(user_id), user_id)
+    if not hook_allowed:
+        logger.warning("Hook blocked repo metadata LLM call for user=%s: %s", user_id, hook_message)
+        raise RuntimeError(f"hook_blocked: {hook_message}")
 
     llm = create_chat_model(
         ModelConfig.INCIDENT_REPORT_SUMMARIZATION_MODEL,

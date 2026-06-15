@@ -59,6 +59,24 @@ def test_search_tools_marks_not_connected_entries(monkeypatch, api_call):
     assert all(t["callable_now"] is False for t in jira_entries)
 
 
+def test_search_tools_surfaces_visible_entries_past_old_window(monkeypatch, api_call):
+    """Visible (callable) entries must be surfaced before non-visible ones even
+    when many non-visible entries rank higher than the requested limit.
+
+    Regression: the old code truncated to limit*2 BEFORE the visibility
+    reorder, so a callable entry ranking just outside that window could be
+    dropped in favour of non-visible ones. With nothing connected, a broad
+    query that matches many gated entries plus a few always-on ones must still
+    return the always-on (callable) ones first under a small limit.
+    """
+    tools = _wire(monkeypatch, api_call, connected=[])  # nothing connected
+    result = asyncio.run(tools["search_tools"](query="list", limit=2))
+    rows = result["tools"]
+    assert rows, "broad query should return matches"
+    # The only callable entries (no enabling_skills) must be ranked first.
+    assert all(t["callable_now"] for t in rows), [t["name"] for t in rows]
+
+
 def test_call_tool_rejects_unallowlisted(monkeypatch, api_call):
     tools = _wire(monkeypatch, api_call, connected=["jira"])
     result = asyncio.run(tools["call_tool"]("delete_all_the_things", {}))
@@ -108,6 +126,27 @@ def test_call_tool_missing_path_arg_returns_error(monkeypatch, api_call):
     result = asyncio.run(tools["call_tool"]("jira_get_issue", {}))
     assert result["error"] == "missing_path_arg"
     assert result["arg"] == "issue_key"
+
+
+def test_call_tool_routes_action_delete(monkeypatch, api_call, captured_calls):
+    """DELETE action routes the path arg with no body/params (always-on entry)."""
+    tools = _wire(monkeypatch, api_call, connected=[])
+    asyncio.run(tools["call_tool"]("action_delete", {"action_id": "abc-123"}))
+    method, path, params, body = captured_calls[-1]
+    assert (method, path) == ("DELETE", "/api/actions/abc-123")
+    assert params is None and body is None
+
+
+def test_call_tool_routes_action_trigger_body(monkeypatch, api_call, captured_calls):
+    """trigger sends incident_id in the JSON body, not the query string."""
+    tools = _wire(monkeypatch, api_call, connected=[])
+    asyncio.run(tools["call_tool"]("action_trigger", {
+        "action_id": "abc-123", "incident_id": "inc-9", "trigger_label": "mcp",
+    }))
+    method, path, params, body = captured_calls[-1]
+    assert (method, path) == ("POST", "/api/actions/abc-123/trigger")
+    assert body == {"incident_id": "inc-9", "trigger_label": "mcp"}
+    assert params is None
 
 
 def test_no_terraform_or_kubectl_entries():

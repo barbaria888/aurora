@@ -231,13 +231,14 @@ At least one LLM provider API key is required. See [LLM Providers](/docs/integra
 
 ### LLM_PROVIDER_MODE
 
-Controls how Aurora routes LLM requests. Three modes are available:
+Controls how Aurora routes LLM requests:
 
 | Mode | Description | Required key |
 |------|-------------|--------------|
 | `openrouter` | All requests go through OpenRouter. One key gives access to models from Anthropic, OpenAI, Google, and others. | `OPENROUTER_API_KEY` |
 | `direct` | Requests go directly to each provider's API based on the model prefix (e.g. `anthropic/...` → Anthropic API). No OpenRouter account needed, but you need a separate API key for each provider you use. | Provider-specific key(s) |
 | `auto` | Same behaviour as `direct`. | Provider-specific key(s) |
+| _provider name_ | Set to a provider such as `bedrock`, `vertex`, `anthropic`, `openai`, `google`, or `ollama` to route **every** model selection through that provider (clean model picks are translated to its native id). Models the provider can't serve fall back to their own native provider. | That provider's config |
 
 `openrouter` is recommended for most deployments — a single key, broadest model selection, and no need to manage multiple provider accounts.
 
@@ -276,6 +277,38 @@ VERTEX_AI_SERVICE_ACCOUNT_JSON={"type":"service_account",...}
 OLLAMA_BASE_URL=http://host.docker.internal:11434
 ```
 
+### AWS Bedrock
+
+One `bedrock` provider with two modes, auto-selected: set `BEDROCK_BASE_URL` for **gateway mode** (OpenAI-compatible endpoint in front of Bedrock), or leave it unset for **native mode** (AWS SDK). `BEDROCK_*` variables take precedence over the standard `AWS_*` ones.
+
+For native mode, set **`LLM_PROVIDER_MODE=bedrock`** to route clean model picks (e.g. `anthropic/claude-sonnet-4.6`) through Bedrock automatically — translated to the matching inference-profile id, region-aware. For gateway mode (or to pin specific ids), use `LLM_PROVIDER_MODE=direct` and point `MAIN_MODEL` (etc.) at an explicit `bedrock/<id>` model.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `BEDROCK_BASE_URL` | - | Gateway mode: OpenAI-compatible base URL (e.g. `.../v1`). When set, Aurora uses gateway mode. |
+| `BEDROCK_API_KEY` | `not-needed` | Gateway mode only. Optional — many VPC gateways need no key. |
+| `BEDROCK_REGION` | - | Native mode AWS region. Falls back to `AWS_REGION` / `AWS_DEFAULT_REGION`. |
+| `BEDROCK_ACCESS_KEY_ID` | _(AWS_ACCESS_KEY_ID)_ | Native mode access key. Omit to use an IAM role / default credential chain. |
+| `BEDROCK_SECRET_ACCESS_KEY` | _(AWS_SECRET_ACCESS_KEY)_ | Native mode secret key. |
+| `BEDROCK_SESSION_TOKEN` | _(AWS_SESSION_TOKEN)_ | Native mode session token, used alongside `BEDROCK_ACCESS_KEY_ID` / `BEDROCK_SECRET_ACCESS_KEY` for temporary / STS credentials. Omit for long-lived keys, a profile, or an IAM role. |
+| `BEDROCK_PROFILE` | - | Native mode named AWS profile (alternative to explicit keys). |
+
+```bash
+# Gateway mode (OpenAI-compatible endpoint, e.g. a Bedrock Access Gateway in your VPC)
+BEDROCK_BASE_URL=https://bedrock-gateway.internal.example.com/v1
+BEDROCK_API_KEY=                       # optional
+LLM_PROVIDER_MODE=direct
+MAIN_MODEL=bedrock/anthropic.claude-3-5-sonnet-20240620-v1:0
+
+# Native mode (AWS SDK) — leave BEDROCK_BASE_URL unset
+BEDROCK_REGION=us-east-1
+BEDROCK_ACCESS_KEY_ID=AKIA...          # or use BEDROCK_PROFILE / an IAM role
+BEDROCK_SECRET_ACCESS_KEY=...
+BEDROCK_SESSION_TOKEN=                  # omit unless using temporary / STS credentials
+LLM_PROVIDER_MODE=bedrock               # routes clean model picks through Bedrock
+MAIN_MODEL=anthropic/claude-sonnet-4.6  # auto-translated to us.anthropic.claude-sonnet-4-6
+```
+
 ### Web Search
 
 | Variable | Default | Description |
@@ -287,11 +320,11 @@ OLLAMA_BASE_URL=http://host.docker.internal:11434
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `RCA_MODEL` | - | Model for background RCA (format: `provider/model`). Overrides `RCA_OPTIMIZE_COSTS` when set. Used by the legacy single-agent RCA path; ignored when `ORCHESTRATOR_ENABLED=true`. |
+| `RCA_MODEL` | - | Model for background RCA (format: `provider/model`). Overrides `RCA_OPTIMIZE_COSTS` when set. Default RCA path when `ORCHESTRATOR_ENABLED=false`. |
 | `RCA_OPTIMIZE_COSTS` | `true` | Only used when `RCA_MODEL` is not set. `true` = `anthropic/claude-haiku-4.5`, `false` = `anthropic/claude-opus-4.6` |
-| `ORCHESTRATOR_ENABLED` | `true` | Multi-agent RCA orchestrator. When `true` (default), a lead orchestrator triages each background RCA and may fan out parallel read-only sub-agents. When `false`, RCA falls back to the legacy single-agent path with `RCA_MODEL`. |
-| `RCA_ORCHESTRATOR_MODEL` | - | **Required when `ORCHESTRATOR_ENABLED=true`.** Brain model used for triage + synthesis decisions. Needs reliable structured-output JSON. No fallback — orchestrator nodes error out if unset and gracefully degrade to single-agent mode. Format: `provider/model`. |
-| `RCA_SUBAGENT_MODEL` | - | **Required when `ORCHESTRATOR_ENABLED=true`.** Sub-agent investigator model. Needs reliable tool-calling — must always end its turn with a tool call (including the terminal `write_findings`). Per-role overrides in `orchestrator/roles/*.md` frontmatter take precedence. Format: `provider/model`. |
+| `ORCHESTRATOR_ENABLED` | `false` | Multi-agent RCA orchestrator (opt-in). When `true`, a lead orchestrator triages each background RCA and may fan out parallel read-only sub-agents; `RCA_MODEL` is ignored. When `false` (default), RCA uses the single-agent path with `RCA_MODEL`. |
+| `RCA_ORCHESTRATOR_MODEL` | - | *Only when `ORCHESTRATOR_ENABLED=true`.* Brain model for triage + synthesis. Format: `provider/model`. |
+| `RCA_SUBAGENT_MODEL` | - | *Only when `ORCHESTRATOR_ENABLED=true`.* Sub-agent investigator model. Per-role overrides in `orchestrator/roles/*.md` frontmatter take precedence. Format: `provider/model`. |
 | `GEMINI_DISABLE_THINKING` | - | Disable Gemini thinking mode |
 
 ### AI Safety Guardrails
@@ -360,7 +393,7 @@ on-prem deployments that cannot expose a public webhook URL.
 | `NEXT_PUBLIC_GITHUB_APP_SLUG` | | The App's URL slug (e.g. `aurora-acme`). Used by the frontend to build install management URLs. |
 | `GITHUB_APP_WEBHOOK_URL` | | Public URL Aurora exposes for webhooks. Must match what's configured on the App. Example: `https://aurora.example.com/github/webhook`. |
 | `GITHUB_APP_SETUP_URL` | | Post-install redirect URL. Example: `https://aurora.example.com/github/app/install/callback`. |
-| `GITHUB_APP_WEBHOOK_SECRET` | | Fallback only — Vault path `aurora/system/github-app/webhook-secret` takes precedence. |
+| `GITHUB_APP_WEBHOOK_SECRET` | | Fallback only — the secrets backend path `aurora/system/github-app/webhook-secret` (Vault or AWS Secrets Manager) takes precedence. |
 | `GH_OAUTH_CLIENT_ID` | | OAuth App Client ID. Required only when `GITHUB_AUTH_MODE` is `oauth` or `hybrid`. |
 | `GH_OAUTH_CLIENT_SECRET` | | OAuth App Client Secret. Required only when `GITHUB_AUTH_MODE` is `oauth` or `hybrid`. |
 
@@ -374,7 +407,8 @@ NEXT_PUBLIC_GITHUB_APP_SLUG=aurora-acme
 GITHUB_APP_WEBHOOK_URL=https://aurora.example.com/github/webhook
 GITHUB_APP_SETUP_URL=https://aurora.example.com/github/app/install/callback
 GITHUB_APP_WEBHOOK_SECRET=
-# (private key PEM lives in Vault at aurora/system/github-app/private-key)
+# (private key PEM lives in your secrets backend — Vault or AWS Secrets
+#  Manager — at aurora/system/github-app/private-key, not in .env)
 ```
 
 Hybrid (App + OAuth, e.g. for a migration window):

@@ -14,6 +14,14 @@ import os
 account_management_bp = Blueprint("account_management", __name__)
 _DELETE_LOG_PREFIX = "[AccountMgmt:delete_connected_account]"
 
+# Providers that should appear under a single connector card in the UI.
+# E.g. "cloudbees_oc" and "cloudbees_fm" are stored separately but the
+# frontend only has one "cloudbees" card.
+_PROVIDER_UI_ALIAS = {
+    "cloudbees_oc": "cloudbees",
+    "cloudbees_fm": "cloudbees",
+}
+
 
 def _validate_provider_connection(provider: str, token_data: dict) -> bool:
     """Return True only if the stored credentials actually work.
@@ -112,7 +120,9 @@ def get_connected_accounts(user_id, target_user_id):
                     result = future.result(timeout=12)
                     if result:
                         provider, account_info = result
-                        accounts[provider] = account_info
+                        ui_key = _PROVIDER_UI_ALIAS.get(provider, provider)
+                        if ui_key not in accounts:
+                            accounts[ui_key] = account_info
                 except Exception as exc:
                     logging.warning("connected-accounts check for %s raised: %s", futures[future], exc)
         finally:
@@ -301,16 +311,16 @@ def delete_connected_account(user_id, target_user_id, provider):
         # --------------------------------------------------------------
         if provider_lc == "aws":
             from utils.db.connection_utils import (
-                list_active_connections,
+                get_all_user_aws_connections,
                 delete_connection_secret,
             )
 
-            active = list_active_connections(user_id)
+            active = get_all_user_aws_connections(user_id)
             if not active:
                 logging.info("No active AWS connections found for user %s", user_id)
 
-            for conn in active:
-                acc_id = conn["account_id"]
+            for aws_conn in active:
+                acc_id = aws_conn["account_id"]
                 _ok = delete_connection_secret(user_id, "aws", acc_id)
                 try:
                     from utils.auth.stateless_auth import invalidate_cached_aws_creds

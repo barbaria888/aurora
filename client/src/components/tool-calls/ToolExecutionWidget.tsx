@@ -165,6 +165,15 @@ const ToolExecutionWidget = ({ tool, className, sendMessage, sendRaw, onToolUpda
   else if (tool.tool_name === "mcp_call_aws" && typeof command === "string" && command.trim().startsWith("{")) {
     command = parseAwsMcpCommand(command)
   }
+  // Fly.io metrics tool parsing
+  else if (tool.tool_name === "query_flyio_metrics") {
+    try {
+      const parsed = JSON.parse(normalizedInput)
+      command = parsed.query || "query_flyio_metrics"
+    } catch {
+      command = "query_flyio_metrics"
+    }
+  }
   else if (tool.tool_name === "mcp_suggest_aws_commands" && typeof command === "string" && command.trim().startsWith("{")) {
     command = parseAwsSuggestCommand(command)
   }
@@ -184,9 +193,36 @@ const ToolExecutionWidget = ({ tool, className, sendMessage, sendRaw, onToolUpda
     const humanTitle = tool.tool_name.replace(/_/g, " ").replace(/\bnotion\b/i, "Notion")
     command = humanTitle
   }
+  // Bitbucket tools: show the action being performed instead of just the tool name
+  else if (tool.tool_name?.startsWith("bitbucket_")) {
+    try {
+      const parsed = JSON.parse(normalizedInput)
+      const action = parsed.action || parsed.kwargs?.action
+      if (action) {
+        const humanAction = action.replace(/_/g, " ")
+        command = `Bitbucket: ${humanAction}`
+      } else {
+        command = tool.tool_name.replace(/_/g, " ").replace(/\bbitbucket\b/i, "Bitbucket")
+      }
+    } catch {
+      command = tool.tool_name.replace(/_/g, " ").replace(/\bbitbucket\b/i, "Bitbucket")
+    }
+  }
   // Slack tools parsing
   else if (tool.tool_name === "list_slack_channels" || tool.tool_name === "get_channel_history" || tool.tool_name === "get_thread_replies") {
     command = parseSlackCommand(tool.tool_name, normalizedInput)
+  }
+  // Alert payload drill-down tool: show the json_path being queried
+  else if (tool.tool_name === "get_alert_field") {
+    try {
+      const parsed = JSON.parse(normalizedInput)
+      const path = parsed.json_path || parsed.kwargs?.json_path || ''
+      if (path) {
+        command = `get_alert_field: ${path}`
+      }
+    } catch {
+      // Keep the precomputed fallback
+    }
   }
 
   // If command is still JSON blob, use default

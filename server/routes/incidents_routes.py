@@ -308,10 +308,25 @@ def get_incidents(user_id):
 
                 query += " ORDER BY i.started_at DESC"
 
+                # Get total count for pagination before applying LIMIT/OFFSET
+                count_query = "SELECT COUNT(*) FROM incidents i WHERE i.org_id = %s AND i.status != 'merged'"
+                count_params = [org_id]
+                if status_filter:
+                    count_query += " AND i.status = %s"
+                    count_params.append(status_filter)
+                cursor.execute(count_query, tuple(count_params))
+                total_count = cursor.fetchone()[0]
+
                 limit = request.args.get("limit", 100, type=int)
                 limit = max(1, min(limit, 100))
                 query += " LIMIT %s"
                 params.append(limit)
+
+                offset = request.args.get("offset", 0, type=int)
+                offset = max(0, offset)
+                if offset > 0:
+                    query += " OFFSET %s"
+                    params.append(offset)
 
                 cursor.execute(query, tuple(params))
                 rows = cursor.fetchall()
@@ -328,7 +343,7 @@ def get_incidents(user_id):
                     len(incidents),
                     user_id,
                 )
-                return jsonify({"incidents": incidents}), 200
+                return jsonify({"incidents": incidents, "total": total_count}), 200
 
     except Exception as exc:
         logger.exception(
@@ -1644,6 +1659,14 @@ def apply_fix_suggestion(user_id, suggestion_id: str):
                 target_branch=target_branch,
                 user_id=user_id,
             )
+        elif provider == "bitbucket":
+            from chat.backend.agent.tools.bitbucket.apply_fix_tool import bitbucket_apply_fix
+            result_json = bitbucket_apply_fix(
+                suggestion_id=suggestion_id_int,
+                use_edited_content=use_edited_content,
+                target_branch=target_branch,
+                user_id=user_id,
+            )
         else:
             return jsonify({"error": f"Unsupported VCS provider: {provider}"}), 400
         result = json.loads(result_json)
@@ -2002,6 +2025,46 @@ def get_recent_unlinked_incidents(user_id):
 
 
 _ALLOWED_SEVERITIES = {"critical", "high", "medium", "low"}
+
+
+@incidents_bp.route("/api/incidents/<incident_id>/action-runs", methods=["GET"])
+@require_permission("incidents", "read")
+def get_incident_action_runs(user_id, incident_id: str):
+    """Return action runs linked to a specific incident."""
+    if not _validate_uuid(incident_id):
+        return jsonify({"error": "Invalid incident ID"}), 400
+
+    org_id = get_org_id_from_request()
+
+    try:
+        with db_pool.get_admin_connection() as conn, conn.cursor() as cursor:
+            set_rls_context(cursor, conn, user_id, log_prefix=_LOG_PREFIX)
+            cursor.execute(
+                """SELECT r.id, r.action_id, r.status, r.chat_session_id,
+                          r.started_at, r.completed_at, r.error,
+                          a.name AS action_name
+                   FROM action_runs r
+                   JOIN actions a ON a.id = r.action_id
+                   WHERE r.incident_id = %s AND r.org_id = %s
+                   ORDER BY r.started_at DESC""",
+                (incident_id, org_id),
+            )
+            cols = [d[0] for d in cursor.description]
+            rows = [dict(zip(cols, row, strict=False)) for row in cursor.fetchall()]
+
+        for r in rows:
+            r["id"] = str(r["id"])
+            r["action_id"] = str(r["action_id"])
+            r["chat_session_id"] = str(r["chat_session_id"]) if r["chat_session_id"] else None
+            if r["started_at"] and r["completed_at"]:
+                r["duration_ms"] = max(0, int((r["completed_at"] - r["started_at"]).total_seconds() * 1000))
+            r["started_at"] = _format_timestamp(r["started_at"])
+            r["completed_at"] = _format_timestamp(r["completed_at"])
+
+        return jsonify({"runs": rows})
+    except Exception:
+        logger.exception("[INCIDENTS] Failed to get action runs for incident %s", sanitize(incident_id))
+        return jsonify({"error": "Failed to retrieve action runs"}), 500
 
 
 @incidents_bp.route("/api/incidents/trigger-rca", methods=["POST"])

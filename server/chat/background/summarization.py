@@ -189,6 +189,7 @@ def _build_summary_prompt_with_chat(
     investigation_transcript: Optional[str] = None,
     citations: Optional[List[Citation]] = None,
     correlated_alert_count: int = 0,
+    fix_suggestions: Optional[List[Dict[str, Any]]] = None,
     agent_reasoning: Optional[str] = None,
 ) -> str:
     """Build a concise summary prompt that incorporates RCA chat context.
@@ -204,6 +205,21 @@ def _build_summary_prompt_with_chat(
     because both paths emit AIMessage content during investigation.
     """
     triggered_line = f"- Triggered at: {triggered_at}" if triggered_at else ""
+
+    # Build fix suggestions block if any exist from github_fix during RCA
+    fix_suggestions_block = ""
+    if fix_suggestions:
+        fix_lines = []
+        for fs in fix_suggestions:
+            repo_info = f" ({fs['repository']})" if fs['repository'] else ""
+            file_info = f" in `{fs['file_path']}`" if fs['file_path'] else ""
+            fix_lines.append(f"- [S:{fs['id']}] {fs['title']}{repo_info}{file_info}")
+        fix_suggestions_block = f"""
+CODE FIX SUGGESTIONS (reference using [S:id] markers):
+The investigation produced these code fix suggestions that are available for the user to apply:
+{chr(10).join(fix_lines)}
+
+When writing the Suggested Next Steps, include the [S:id] marker inline next to the relevant step so the user can apply the fix directly. For example: "Revert the config change [S:4]" — place the marker at the end of the bullet point."""
 
     # If we have citations, use citation-based prompt
     if citations:
@@ -287,7 +303,7 @@ WRITING RULES:
 - Tone: professional, factual, incident-record style. Calibrated certainty: state facts where supported, state uncertainty where not.
 
 After the report, add a "## Suggested Next Steps" paragraph with 2-4 concrete diagnostic actions (specific logs/metrics/configs/components). When the root cause is undetermined, these MUST be the precise checks an engineer would run to determine it — not generic advice.
-"""
+{fix_suggestions_block}"""
     else:
         # Transcript fallback — same anti-hallucination contract.
         transcript = investigation_transcript or "[No transcript available]"
@@ -321,8 +337,52 @@ ANTI-HALLUCINATION RULES (non-negotiable):
 Tone: neutral, factual, incident-record style. Descriptive, not advisory. Do not address any audience.
 
 After the summary, add a "## Suggested Next Steps" paragraph with 2-4 concrete diagnostic actions. When the root cause is undetermined, these MUST be the precise checks an engineer would run to determine it — not generic advice.
-"""
+{fix_suggestions_block}"""
     return prompt
+
+
+def _fetch_fix_suggestions(incident_id: str, _retries: int = 2) -> List[Dict[str, Any]]:
+    """Fetch pre-existing fix suggestions (created by github_fix during RCA)."""
+    import time
+    from utils.db.connection_pool import db_pool
+
+    for attempt in range(_retries + 1):
+        try:
+            with db_pool.get_admin_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        """
+                        SELECT id, title, description, file_path, repository
+                        FROM incident_suggestions
+                        WHERE incident_id = %s AND type = 'fix'
+                        ORDER BY created_at
+                        """,
+                        (incident_id,),
+                    )
+                    rows = cursor.fetchall()
+                    return [
+                        {
+                            "id": row[0],
+                            "title": row[1],
+                            "description": row[2] or "",
+                            "file_path": row[3] or "",
+                            "repository": row[4] or "",
+                        }
+                        for row in rows
+                    ]
+        except Exception as e:
+            if attempt < _retries:
+                logger.warning(
+                    f"[IncidentSummary] Transient failure fetching fix suggestions for {incident_id} (attempt {attempt + 1}): {e}"
+                )
+                time.sleep(0.5 * (attempt + 1))
+            else:
+                logger.error(
+                    f"[IncidentSummary] Failed to fetch fix suggestions for {incident_id} after {_retries + 1} attempts: {e}"
+                )
+                return []
+
+    return []
 
 
 def _fetch_incident_basics(incident_id: str, user_id: str) -> Optional[Dict[str, Any]]:
@@ -524,6 +584,14 @@ def generate_incident_summary(
         f"{_LOG_PREFIX} Generating summary for incident {incident_id} (user={user_id}, source={source_type})"
     )
 
+    # Hook: check if LLM call is allowed
+    from utils.hooks import get_hook
+    from utils.auth.stateless_auth import get_org_id_for_user
+    hook_allowed, hook_message = get_hook("before_llm_call")(get_org_id_for_user(user_id), user_id)
+    if not hook_allowed:
+        logger.warning(f"{_LOG_PREFIX} Hook blocked for user {user_id}: {hook_message}")
+        return {"incident_id": incident_id, "status": "hook_blocked", "error": hook_message}
+
     try:
         # Build the prompt
         prompt = _build_summary_prompt(
@@ -635,6 +703,14 @@ def generate_incident_summary_from_chat(
         f"{_LOG_PREFIX} Regenerating summary from chat for incident {incident_id} (user={user_id}, session={session_id})"
     )
 
+    # Hook: check if LLM call is allowed
+    from utils.hooks import get_hook
+    from utils.auth.stateless_auth import get_org_id_for_user
+    hook_allowed, hook_message = get_hook("before_llm_call")(get_org_id_for_user(user_id), user_id)
+    if not hook_allowed:
+        logger.warning(f"{_LOG_PREFIX} Hook blocked for user {user_id}: {hook_message}")
+        return {"incident_id": incident_id, "status": "hook_blocked", "error": hook_message}
+
     try:
         basics = _fetch_incident_basics(incident_id, user_id=user_id)
         if not basics:
@@ -659,6 +735,13 @@ def generate_incident_summary_from_chat(
         if not all_citations:
             transcript = _fetch_chat_transcript(user_id=user_id, session_id=session_id)
 
+        # Fetch pre-existing fix suggestions (created by github_fix during RCA)
+        fix_suggestions = _fetch_fix_suggestions(incident_id)
+        if fix_suggestions:
+            logger.info(
+                f"[IncidentSummary] Found {len(fix_suggestions)} fix suggestions for incident {incident_id}"
+            )
+
         # Feed the same Thoughts-panel content the user sees back to the
         # summarizer. Without it the LLM has only raw tool outputs and
         # routinely promotes absence of evidence into a confident root cause.
@@ -675,6 +758,7 @@ def generate_incident_summary_from_chat(
             investigation_transcript=transcript,
             citations=all_citations if all_citations else None,
             correlated_alert_count=basics.get("correlated_alert_count", 0),
+            fix_suggestions=fix_suggestions if fix_suggestions else None,
             agent_reasoning=agent_reasoning,
         )
 

@@ -1,9 +1,9 @@
 """Tier-1 always-on MCP tools — focused on the 80% incident workflow.
 
 These tools are registered for every user regardless of which connectors
-are wired up. Descriptions are written so a good external LLM will prefer
-`chat_with_aurora` for ambiguous investigations and fall back to direct
-tools only when the user explicitly asks for raw data.
+are wired up. Descriptions are written so a good external LLM reaches for a
+direct read (incidents, infrastructure context, service graph, RCA findings)
+for factual lookups, and uses `trigger_rca` when a new investigation is needed.
 """
 
 from __future__ import annotations
@@ -11,24 +11,15 @@ from __future__ import annotations
 import asyncio
 import logging
 from typing import Any, Awaitable, Callable, Dict, List, Optional
+from urllib.parse import quote
 
 from .response import truncate_payload
-from .chat_bridge import chat_with_aurora as _chat_with_aurora
 
 logger = logging.getLogger(__name__)
 
 ApiCall = Callable[..., Awaitable[Dict[str, Any]]]
 
-# Per-call timeouts (seconds). Defaults that diverge from the shared httpx
-# client default live here so they can be tuned in one place.
-_ASK_POLL_TIMEOUT = 15.0
 _RCA_TRIGGER_TIMEOUT = 60.0
-
-# Terminal states mirror chat_bridge._TERMINAL_*. Use an explicit allowlist so
-# unknown/new statuses (e.g. "active") don't get treated as terminal by a
-# denylist check.
-_TERMINAL_OK = frozenset({"complete", "completed"})
-_TERMINAL_ERR = frozenset({"error", "cancelled", "failed"})
 
 
 def _slim_incident(incident: Any) -> Any:
@@ -44,10 +35,12 @@ def _slim_incident(incident: Any) -> Any:
     return incident
 
 
-async def _do_list_incidents(api_call: ApiCall, status: Optional[str], limit: int) -> Dict[str, Any]:
+async def _do_list_incidents(api_call: ApiCall, status: Optional[str], limit: int, offset: int) -> Dict[str, Any]:
     params: Dict[str, Any] = {"limit": limit}
     if status:
         params["status"] = status
+    if offset > 0:
+        params["offset"] = offset
     return truncate_payload(
         await api_call("GET", "/api/incidents", params=params),
         tool_name="list_incidents",
@@ -63,42 +56,6 @@ async def _do_get_incident(api_call: ApiCall, incident_id: str) -> Dict[str, Any
         )
     return truncate_payload(_slim_incident(raw), tool_name="get_incident")
 
-
-async def _do_ask_incident(api_call: ApiCall, incident_id: str, question: str) -> Dict[str, Any]:
-    result = await api_call(
-        "POST",
-        f"/api/incidents/{incident_id}/chat",
-        body={"question": question, "mode": "ask"},
-    )
-    session_id = result.get("session_id") if isinstance(result, dict) else None
-    if not session_id:
-        return truncate_payload(result, tool_name="ask_incident")
-
-    for _ in range(20):
-        await asyncio.sleep(2)
-        async with asyncio.timeout(_ASK_POLL_TIMEOUT):
-            session = await api_call("GET", f"/chat_api/sessions/{session_id}")
-        status = session.get("status")
-        if status in _TERMINAL_OK or status in _TERMINAL_ERR:
-            return truncate_payload(session, tool_name="ask_incident")
-
-    return {
-        "status": "still_processing",
-        "session_id": session_id,
-        "message": (
-            "Response not ready after 40s. Re-call with chat_with_aurora "
-            f"(session_id={session_id}) or read the session directly."
-        ),
-    }
-
-
-async def _do_regenerate_rca(api_call: ApiCall, incident_id: str) -> Dict[str, Any]:
-    async with asyncio.timeout(_RCA_TRIGGER_TIMEOUT):
-        result = await api_call(
-            "POST",
-            f"/api/incidents/{incident_id}/postmortem/regenerate",
-        )
-    return truncate_payload(result, tool_name="regenerate_rca")
 
 
 async def _do_trigger_rca(
@@ -152,12 +109,109 @@ async def _do_search_runbooks(api_call: ApiCall, query: str, limit: int) -> Dict
     return truncate_payload({"sources": sources}, tool_name="search_runbooks")
 
 
+async def _do_get_infrastructure_context(api_call: ApiCall) -> Dict[str, Any]:
+    return truncate_payload(
+        await api_call("GET", "/api/graph/infrastructure/context"),
+        tool_name="get_infrastructure_context",
+    )
+
+
+async def _do_list_services(
+    api_call: ApiCall, resource_type: Optional[str], provider: Optional[str],
+) -> Dict[str, Any]:
+    params: Dict[str, Any] = {}
+    if resource_type:
+        params["resource_type"] = resource_type
+    if provider:
+        params["provider"] = provider
+    return truncate_payload(
+        await api_call("GET", "/api/graph/services", params=params or None),
+        tool_name="list_services",
+    )
+
+
+async def _do_service_impact(api_call: ApiCall, name: str) -> Dict[str, Any]:
+    # First-class helpers bypass dispatch's _build_path/quote, and _api only
+    # blocks `..` (not arbitrary chars), so encode the name ourselves — a
+    # service name with a "/" or space would otherwise break the path.
+    encoded = quote(name, safe="")
+    return truncate_payload(
+        await api_call("GET", f"/api/graph/services/{encoded}/impact"),
+        tool_name="service_impact",
+    )
+
+
+async def _do_incident_findings(api_call: ApiCall, incident_id: str) -> Dict[str, Any]:
+    return truncate_payload(
+        await api_call("GET", f"/api/incidents/{incident_id}/findings"),
+        tool_name="incident_findings",
+    )
+
+
+async def _do_incident_finding_detail(
+    api_call: ApiCall, incident_id: str, agent_id: str,
+) -> Dict[str, Any]:
+    return truncate_payload(
+        await api_call("GET", f"/api/incidents/{incident_id}/findings/{agent_id}"),
+        tool_name="incident_finding_detail",
+    )
+
+
+async def _do_incident_list_alerts(api_call: ApiCall, incident_id: str) -> Dict[str, Any]:
+    return truncate_payload(
+        await api_call("GET", f"/api/incidents/{incident_id}/alerts"),
+        tool_name="incident_list_alerts",
+    )
+
+
+async def _do_list_actions(api_call: ApiCall) -> Dict[str, Any]:
+    return truncate_payload(
+        await api_call("GET", "/api/actions"),
+        tool_name="list_actions",
+    )
+
+
+async def _do_get_action(api_call: ApiCall, action_id: str) -> Dict[str, Any]:
+    return truncate_payload(
+        await api_call("GET", f"/api/actions/{action_id}"),
+        tool_name="get_action",
+    )
+
+
+async def _do_list_action_runs(
+    api_call: ApiCall, action_id: str, limit: int, offset: int,
+) -> Dict[str, Any]:
+    # Enforce the documented contract here rather than relying on the backend's
+    # own clamp, so the tool's stated bounds (1-200, offset >= 0) actually hold.
+    limit = max(1, min(int(limit), 200))
+    offset = max(0, int(offset))
+    return truncate_payload(
+        await api_call(
+            "GET", f"/api/actions/{action_id}/runs",
+            params={"limit": limit, "offset": offset},
+        ),
+        tool_name="list_action_runs",
+    )
+
+
 def register_tier1_tools(mcp, api_call: ApiCall) -> None:
     """Register Tier-1 tools on a FastMCP instance.
 
     `api_call` is the bound `_api(method, path, ...)` from mcp_server.py —
     it forwards user identity from the MCP bearer token.
     """
+
+    # ------------------------------------------------------------------
+    # Deprecated stubs — these tools have been removed but clients with a
+    # stale tool cache may still try to call them. Return an immediate
+    # error directing the LLM to the replacement and the user to refresh.
+    # Safe to delete once all clients have rotated (~ 1 release cycle).
+    # ------------------------------------------------------------------
+    _DEPRECATION = (
+        "This tool has been removed from Aurora's MCP surface. "
+        "The user should disconnect and reconnect their MCP client "
+        "(or restart their IDE) to refresh the tool list. "
+    )
 
     @mcp.tool()
     async def chat_with_aurora(
@@ -166,51 +220,38 @@ def register_tier1_tools(mcp, api_call: ApiCall) -> None:
         mode: str = "chat",
         poll_only: bool = False,
     ) -> Dict[str, Any]:
-        """Default tool for any question about incidents, services, infrastructure, or
-        operations. Aurora's agent picks the right data sources, runs RCAs, and cites
-        sources. Prefer this over calling individual tools unless the user explicitly
-        asks for raw data from a specific source.
-
-        SESSION THREADING — READ THIS BEFORE CALLING:
-        Aurora chats are session-scoped. Every call returns a `session_id` in the
-        result. For ANY follow-up turn in the same conversation (clarifications,
-        next steps, "and also…", "what about X?", re-asking after a partial
-        answer, polling, etc.) you MUST pass that `session_id` back. Omit it
-        ONLY when the user clearly starts an unrelated new topic. When in
-        doubt, reuse the last `session_id` — Aurora has its own memory and
-        will branch naturally; starting a fresh session loses all prior
-        context, tools, citations, and is almost always the wrong default.
-
-        Concretely:
-          • First turn:  chat_with_aurora(message="…")  → note result.session_id
-          • Follow-up:   chat_with_aurora(message="…", session_id="<that id>")
-          • Status was "in_progress": chat_with_aurora(session_id="<that id>", poll_only=True)
-
-        Args:
-          message: User question. Ignored when poll_only=True.
-          session_id: The `session_id` from the previous chat_with_aurora result.
-            REQUIRED on every follow-up turn in the same conversation. Omit
-            only to deliberately start a new, unrelated chat.
-          mode: "chat" (default) or "rca" for the deeper RCA pipeline.
-          poll_only: True to resume polling a still-running session without
-            sending a new turn. Requires session_id.
-
-        Returns: dict with `session_id` (always — keep this for the next call),
-          `status` ("complete" | "in_progress" | "error" | "cancelled" | "failed"),
-          and either `response` + `citations` (complete), `partial` + `hint`
-          (in_progress), or `error` (terminal failure).
-        """
-        result = await _chat_with_aurora(
-            api_call, message=message, session_id=session_id,
-            mode=mode, poll_only=poll_only,
-        )
-        return truncate_payload(result, tool_name="chat_with_aurora")
+        """Deprecated. Use trigger_rca or direct read tools instead."""
+        return {"error": "deprecated", "message": _DEPRECATION +
+                "Use trigger_rca to start investigations, or direct tools "
+                "(list_incidents, get_incident, incident_findings) for reads."}
 
     @mcp.tool()
-    async def list_incidents(status: Optional[str] = None, limit: int = 20) -> Dict[str, Any]:
+    async def ask_incident(incident_id: str = "", question: str = "") -> Dict[str, Any]:
+        """Deprecated. Use get_incident or incident_findings instead."""
+        return {"error": "deprecated", "message": _DEPRECATION +
+                "Use get_incident, incident_findings, or incident_finding_detail "
+                "for incident data."}
+
+    @mcp.tool()
+    async def regenerate_rca(incident_id: str = "") -> Dict[str, Any]:
+        """Deprecated. Use trigger_rca instead."""
+        return {"error": "deprecated", "message": _DEPRECATION +
+                "Use trigger_rca to start a new investigation."}
+
+    @mcp.tool()
+    async def list_incidents(status: Optional[str] = None, limit: int = 20, offset: int = 0) -> Dict[str, Any]:
         """List Aurora incidents. Optionally filter by status
-        (investigating/analyzed/merged/resolved)."""
-        return await _do_list_incidents(api_call, status, limit)
+        (investigating/analyzed/merged/resolved).
+
+        Args:
+          status: Filter by incident status (optional).
+          limit: Max incidents to return (1-100, default 20).
+          offset: Paging offset (>= 0, default 0).
+
+        Returns {incidents: [...], total: N}. Use total to know when to
+        stop paging (e.g. offset + limit >= total means last page).
+        """
+        return await _do_list_incidents(api_call, status, limit, offset)
 
     @mcp.tool()
     async def get_incident(incident_id: str) -> Dict[str, Any]:
@@ -221,21 +262,6 @@ def register_tier1_tools(mcp, api_call: ApiCall) -> None:
         status — those are useful in the Aurora UI but cost too much over MCP.
         Pull the full body via the Aurora UI or a direct API call if needed."""
         return await _do_get_incident(api_call, incident_id)
-
-    @mcp.tool()
-    async def ask_incident(incident_id: str, question: str) -> Dict[str, Any]:
-        """Ask Aurora a follow-up question about a specific incident. Use this for
-        incident-scoped Q&A; for broader investigations use chat_with_aurora."""
-        return await _do_ask_incident(api_call, incident_id, question)
-
-    @mcp.tool()
-    async def regenerate_rca(incident_id: str) -> Dict[str, Any]:
-        """Re-run RCA for an EXISTING incident. Re-investigates and rewrites
-        the postmortem with refreshed citations. Use this when an incident
-        already exists (e.g. surfaced via list_incidents) and you want a
-        fresh pass. To start an RCA from a free-text description with no
-        existing incident, use `trigger_rca` instead."""
-        return await _do_regenerate_rca(api_call, incident_id)
 
     @mcp.tool()
     async def trigger_rca(
@@ -251,8 +277,7 @@ def register_tier1_tools(mcp, api_call: ApiCall) -> None:
         `incident_id` and a `rca_session_id` to track progress.
 
         Use this when the user describes an issue and there is no existing
-        Aurora incident for it yet. If an incident already exists, prefer
-        `regenerate_rca(incident_id)` instead.
+        Aurora incident for it yet.
 
         Args:
           issue_description: REQUIRED. What the user is seeing — symptoms,
@@ -281,3 +306,98 @@ def register_tier1_tools(mcp, api_call: ApiCall) -> None:
         (when connected). Confluence has no search endpoint — fetch specific
         Confluence pages via call_tool('confluence_fetch_page', { url })."""
         return await _do_search_runbooks(api_call, query, limit)
+
+    # The next three tools (get_infrastructure_context, list_services,
+    # service_impact) are promoted from the Tier-3 dispatch allowlist to
+    # first-class tools. They intentionally shadow the former
+    # get_infrastructure_context / graph_list_services / graph_service_impact
+    # dispatch entries — do NOT re-add those to DISPATCH_ALLOWLIST (see the NOTE
+    # in registry.py); double-exposure is asserted against in tests.
+    @mcp.tool()
+    async def get_infrastructure_context() -> Dict[str, Any]:
+        """Get the system's infrastructure context: environments, services,
+        dependencies, CI/CD, and monitoring. Use this FIRST to understand the
+        topology before investigating — it's a direct read, no chat needed."""
+        return await _do_get_infrastructure_context(api_call)
+
+    @mcp.tool()
+    async def list_services(
+        resource_type: Optional[str] = None, provider: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """List the services in Aurora's dependency graph. Use this to enumerate
+        what exists before drilling into a specific service. Optional filters:
+        resource_type, provider."""
+        return await _do_list_services(api_call, resource_type, provider)
+
+    @mcp.tool()
+    async def service_impact(name: str) -> Dict[str, Any]:
+        """Get a service's blast radius — the downstream services that depend on
+        it. Use this to answer "what breaks if <service> goes down / what depends
+        on <service>". Direct read; no chat needed.
+
+        Args:
+          name: the service name (as it appears in list_services / the graph).
+        """
+        return await _do_service_impact(api_call, name)
+
+    @mcp.tool()
+    async def incident_findings(incident_id: str) -> Dict[str, Any]:
+        """List what each RCA sub-agent investigated for an incident: role,
+        tools_used, citations, and follow-ups. Use this to answer "what did the
+        RCA look at / which steps did it run". For one agent's full step-by-step
+        trace, follow up with `incident_finding_detail`."""
+        return await _do_incident_findings(api_call, incident_id)
+
+    @mcp.tool()
+    async def incident_finding_detail(incident_id: str, agent_id: str) -> Dict[str, Any]:
+        """Get one RCA sub-agent's full finding plus its per-step
+        tool_call_history — the exact tools/steps it used during the
+        investigation. Get the agent_id from `incident_findings` first.
+
+        Args:
+          incident_id: the incident UUID.
+          agent_id: the sub-agent id from incident_findings.
+        """
+        return await _do_incident_finding_detail(api_call, incident_id, agent_id)
+
+    @mcp.tool()
+    async def incident_list_alerts(incident_id: str) -> Dict[str, Any]:
+        """List the alerts correlated to an incident: source, title, service,
+        severity, and correlation score. Use this to answer "what alerts fired
+        for incident X". Direct read; no chat needed."""
+        return await _do_incident_list_alerts(api_call, incident_id)
+
+    # The next three are Aurora "Actions" (automations) reads, promoted from the
+    # dispatch allowlist to first-class tools so "list my actions" maps here
+    # directly. The action WRITES (create/update/delete/restore/trigger) stay in
+    # DISPATCH_ALLOWLIST (registry.py) — do NOT re-add these reads there.
+    @mcp.tool()
+    async def list_actions() -> Dict[str, Any]:
+        """List this org's Aurora actions (automations): name, trigger type,
+        mode, enabled, run count, and last-run status. Use this when the user
+        asks to see their actions or automations. Direct read; no chat needed.
+        (Aurora "Actions" are saved automations — not the agent's own tools.)"""
+        return await _do_list_actions(api_call)
+
+    @mcp.tool()
+    async def get_action(action_id: str) -> Dict[str, Any]:
+        """Get one Aurora action's full config plus its 20 most recent runs.
+
+        Args:
+          action_id: the action UUID (from list_actions).
+        """
+        return await _do_get_action(api_call, action_id)
+
+    @mcp.tool()
+    async def list_action_runs(
+        action_id: str, limit: int = 50, offset: int = 0,
+    ) -> Dict[str, Any]:
+        """List an Aurora action's run history: status, timing, linked incident/
+        chat session, and any error. Use this to check whether an automation ran
+        and how it went.
+
+        Args:
+          action_id: the action UUID (from list_actions).
+          limit: max runs (1-200, default 50). offset: paging offset.
+        """
+        return await _do_list_action_runs(api_call, action_id, limit, offset)

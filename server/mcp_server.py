@@ -203,7 +203,7 @@ def _get_http_client() -> httpx.AsyncClient:
     """Lazily build a long-lived httpx client with keepalive pooling.
 
     Reusing the client across requests preserves the TCP/TLS connection to
-    aurora-server, which matters in tight poll loops like chat_with_aurora.
+    aurora-server, which matters in tight poll loops.
     """
     global _http_client
     if _http_client is None or _http_client.is_closed:
@@ -266,6 +266,10 @@ async def _api(
             method, path, code, detail,
         )
         raise ValueError(f"Aurora API returned status {code}") from exc
+    # 204 No Content (e.g. DELETE) and other empty bodies have no JSON to parse;
+    # resp.json() would raise. Return a small ack so the MCP client sees success.
+    if resp.status_code == 204 or not resp.content:
+        return {"status": "ok", "status_code": resp.status_code}
     return resp.json()
 
 
@@ -276,12 +280,18 @@ async def _api(
 mcp = FastMCP(
     "Aurora",
     instructions=(
-        "Aurora is an AI-powered cloud operations platform. For investigation, "
-        "incident triage, or any open-ended question, prefer `chat_with_aurora` "
-        "— Aurora's agent picks the right tools, runs RCAs, and cites sources. "
-        "Use the connector-specific tools (query_logs, query_metrics, github_rca…) "
-        "only when the user explicitly asks for raw data. Discover additional "
-        "tools via search_tools and invoke them via call_tool."
+        "Aurora is an AI-powered cloud operations platform. For a factual lookup, "
+        "use a direct tool, not chat: incidents (list_incidents/get_incident), "
+        "infrastructure context & service graph/blast radius "
+        "(get_infrastructure_context/list_services/service_impact), RCA findings "
+        "(incident_findings/incident_finding_detail), incident alerts "
+        "(incident_list_alerts). For metrics (MTTR/DORA), postmortems, runbooks, "
+        "deployments, logs, or anything not shown upfront, call `search_tools` to "
+        "find the direct tool before assuming it's missing. Use `trigger_rca` to "
+        "start a new investigation from a problem description. It is NOT for "
+        "questions about the Aurora product itself (how the app works, its "
+        "features, UI, settings) — answer those from your own knowledge. "
+        "Invoke discovered tools via call_tool."
     ),
     host="0.0.0.0",  # Bind all interfaces; auth is enforced via Bearer token
     stateless_http=True,

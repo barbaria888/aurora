@@ -57,7 +57,6 @@ SUPPORTED_SECRET_PROVIDERS: Set[str] = {
     "sharepoint", # SharePoint connector tokens
     "coroot",   # Coroot connector tokens
     "bitbucket", # Bitbucket connector tokens
-    "bitbucket_workspace_selection",  # Bitbucket selected workspace and repo
     "dynatrace", # Dynatrace connector tokens
     "bigpanda", # BigPanda connector tokens
     "thousandeyes", # ThousandEyes connector tokens
@@ -70,6 +69,8 @@ SUPPORTED_SECRET_PROVIDERS: Set[str] = {
     "notion",   # Notion (documentation platform)
     "google",   # Google Chat — provider is "google_chat", split('_')[0] matches this
     "incidentio",  # incident.io connector tokens
+    "flyio",    # Fly.io connector tokens
+    "kubeconfig", # Kubernetes kubeconfig uploads
 }
 
 
@@ -187,7 +188,7 @@ class SecretRefManager:
                      AND secret_ref IS NOT NULL
                      AND is_active = TRUE
                    LIMIT 1""",
-                (*pred_params, provider_base),
+                (*pred_params, provider.lower()),
             )
             return cursor.fetchone() is not None
         except Exception as e:
@@ -222,7 +223,7 @@ class SecretRefManager:
                      AND secret_ref IS NOT NULL
                      AND is_active = TRUE
                    LIMIT 1""",
-                (*pred_params, provider_base),
+                (*pred_params, provider.lower()),
             )
 
             result = cursor.fetchone()

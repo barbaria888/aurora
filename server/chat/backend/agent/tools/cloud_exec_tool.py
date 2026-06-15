@@ -23,6 +23,7 @@ _ISOLATED_HOME = "/home/appuser" if _POD_ISOLATION else str(Path.home())
 
 from utils.auth.cloud_auth import generate_contextual_access_token
 from utils.auth.cloud_auth import generate_azure_access_token
+from utils.secrets.secret_ref_utils import get_user_token_data, get_token_owner_id
 from .output_sanitizer import sanitize_command_output, filter_error_messages, truncate_json_fields
 from .cloud_provider_utils import determine_target_provider_from_context
 from chat.backend.agent.prompt.prompt_builder import CLOUD_EXEC_PROVIDERS
@@ -42,6 +43,8 @@ def _normalize_cloud_exec_provider(raw: Optional[str]) -> str:
         return "aws"
     if p == "scw":
         return "scaleway"
+    if p in ("fly", "flyctl"):
+        return "flyio"
     return p
 
 
@@ -587,7 +590,6 @@ def setup_ovh_environment_isolated(user_id: str, selected_project_id: str | None
         logger.info("Setting up isolated OVH environment...")
 
         # Get OVH token data from database
-        from utils.secrets.secret_ref_utils import get_user_token_data
         token_data = get_user_token_data(user_id, 'ovh')
 
         if not token_data:
@@ -650,7 +652,6 @@ def setup_ovh_environment_isolated(user_id: str, selected_project_id: str | None
                         }
                         if project_id:
                             updated_storage["projectId"] = project_id
-                        from utils.secrets.secret_ref_utils import get_token_owner_id
                         owner_id = get_token_owner_id(user_id, "ovh")
                         store_tokens_in_db(owner_id, updated_storage, 'ovh')
                         logger.info("Successfully refreshed OVH access token")
@@ -706,7 +707,6 @@ def setup_scaleway_environment_isolated(user_id: str, selected_project_id: str |
         logger.info("Setting up isolated Scaleway environment...")
 
         # Get Scaleway token data from database
-        from utils.secrets.secret_ref_utils import get_user_token_data
         token_data = get_user_token_data(user_id, 'scaleway')
 
         if not token_data:
@@ -774,7 +774,6 @@ def setup_tailscale_environment_isolated(user_id: str, selected_tailnet: str | N
         logger.info("Setting up isolated Tailscale environment...")
 
         # Get Tailscale token data from database
-        from utils.secrets.secret_ref_utils import get_user_token_data
         stored_data = get_user_token_data(user_id, 'tailscale')
 
         if not stored_data:
@@ -1096,6 +1095,45 @@ def execute_tailscale_command(command: str, isolated_env: dict) -> dict:
         }
 
 
+def setup_flyio_environment_isolated(user_id: str, selected_org: str | None = None):
+    """Set up Fly.io environment with isolated credentials - NO global state modification.
+
+    Fly.io CLI (flyctl) uses FLY_API_TOKEN for authentication.
+    """
+    try:
+        fn_start = time.perf_counter()
+        logger.info("Setting up isolated Fly.io environment...")
+
+        token_data = get_user_token_data(user_id, 'flyio')
+
+        if not token_data:
+            logger.error("No Fly.io credentials found for user")
+            return False, None, None, None
+
+        api_token = token_data.get('api_token')
+        org_slug = selected_org or token_data.get('org_slug')
+
+        if not api_token:
+            logger.error("Missing Fly.io api_token")
+            return False, None, None, None
+
+        isolated_env = {
+            "PATH": os.environ.get("PATH", ""),
+            "HOME": _ISOLATED_HOME,
+            "USER": os.environ.get("USER", ""),
+            "FLY_API_TOKEN": api_token,
+        }
+
+        logger.info("Fly.io isolated environment configured (org: %s)", org_slug)
+        logger.info("TIME: setup_flyio_environment_isolated completed in %.2fs", time.perf_counter() - fn_start)
+
+        return True, org_slug, "api_token", isolated_env
+
+    except Exception:
+        logger.exception("Failed to setup Fly.io environment")
+        return False, None, None, None
+
+
 def is_read_only_command(command: str) -> bool:
     """Check if a cloud command is read-only (list, describe, get, etc.)."""
     read_only_verbs = ['list', 'describe', 'get', 'show', 'config', 'version', 'info', 'status', 'read', 'view', 'help', 'logs', 'top']
@@ -1357,7 +1395,8 @@ Security & Compliance
         # Prepend CLI prefix so patterns like ^aws\s+ match (cloud_exec receives
         # the subcommand without the provider prefix, e.g. "ecs list-clusters").
         _CLI_PREFIX = {"aws": "aws", "gcp": "gcloud", "azure": "az",
-                       "scaleway": "scw", "ovh": "ovhcloud", "tailscale": "tailscale"}
+                       "scaleway": "scw", "ovh": "ovhcloud", "tailscale": "tailscale",
+                       "flyio": "fly"}
         prefix = _CLI_PREFIX.get(provider.lower(), "")
         gated_cmd = f"{prefix} {command}" if prefix and not command.strip().startswith(prefix) else command
         from utils.auth.command_gate import gate_command
@@ -1365,9 +1404,15 @@ Security & Compliance
         if not gate.allowed:
             logger.warning("cloud_exec blocked for user %s (%s): %s",
                            user_id, gate.code, gate.block_reason[:200])
+            error_msg = gate.block_reason
+            if gate.code == "POLICY_DENIED" and "No matching allow rule" in error_msg:
+                error_msg += (
+                    f". To allow {prefix or provider} commands, go to Settings > Security > "
+                    "Command Policies and re-apply a template or manually add an allow rule."
+                )
             return json.dumps({
                 "success": False,
-                "error": gate.block_reason,
+                "error": error_msg,
                 "code": gate.code,
                 "final_command": command,
                 "provider": provider.lower(),
@@ -1424,6 +1469,12 @@ Security & Compliance
             if not success:
                 return json.dumps({"error": f"Failed to setup Tailscale environment. Please connect your Tailscale account first.", "final_command": command, "requires_connection": True})
             resource_id = tailnet
+        elif normalized_provider == 'flyio':
+            # Fly.io isolated setup - uses FLY_API_TOKEN env var
+            success, org_slug, auth_method, isolated_env = setup_flyio_environment_isolated(user_id, selected_project_id)
+            if not success:
+                return json.dumps({"error": "Failed to setup Fly.io environment. Please connect your Fly.io account first.", "final_command": command, "requires_connection": True})
+            resource_id = org_slug
         elif normalized_provider not in CLOUD_EXEC_PROVIDERS:
             return json.dumps({
                 "success": False,
@@ -1643,6 +1694,9 @@ Security & Compliance
         elif provider.lower() == 'scaleway':
             supported_cli_tools = ['scw', 'kubectl', 'helm', 'terraform']
             default_cli = 'scw'
+        elif provider.lower() == 'flyio':
+            supported_cli_tools = ['fly', 'flyctl']
+            default_cli = 'fly'
         else:
             supported_cli_tools = []
             default_cli = ''
@@ -1663,6 +1717,8 @@ Security & Compliance
             command = f"ovhcloud {command}"
         elif provider.lower() == 'scaleway' and cli_tool == 'scw' and not terraform_invocation and not command.strip().startswith('scw'):
             command = f"scw {command}"
+        elif provider.lower() == 'flyio' and cli_tool == 'fly' and not command.strip().startswith(('fly ', 'flyctl ')):
+            command = f"fly {command}"
 
         # Apply provider-specific convenience flags
         if provider.lower() in ['gcp', 'gcloud'] and cli_tool == 'gcloud':
@@ -1675,7 +1731,6 @@ Security & Compliance
                 logger.info(f"Using explicit project: {region_or_project}")
             else:
                 # Extract the project from the command if specified
-                import re
                 project_match = re.search(r'--project[=\s]+([^\s]+)', command)
                 if project_match:
                     specified_project = project_match.group(1)
@@ -1696,7 +1751,6 @@ Security & Compliance
                 logger.info(f"Using explicit region: {region_or_project}")
             else:
                 # Extract the region from the command if specified
-                import re
                 region_match = re.search(r'--region[=\s]+([^\s]+)', command)
                 if region_match:
                     specified_region = region_match.group(1)
@@ -2216,7 +2270,6 @@ Security & Compliance
             return any(flag in lowered for flag in ["--filter", "--query", "--limit", "--page-size", "--max-items"])
 
         def _build_projection_command(provider_name: str, cmd: str) -> Tuple[Optional[str], Optional[str]]:
-            import re
             lowered = cmd.lower()
             if provider_name.lower() in ['gcp', 'gcloud']:
                 if " list" in lowered:

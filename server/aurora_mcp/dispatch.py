@@ -15,6 +15,7 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 from urllib.parse import quote
 
 from .registry import (
+    DISPATCH_ALLOWLIST,
     _get_cached_connector_status,
     dispatch_entry_visible,
     find_dispatch_entry,
@@ -43,6 +44,8 @@ def _arg_schema(entry) -> List[Dict[str, Any]]:
         out.append({"name": a, "in": "path", "required": True})
     for a in entry.body_keys:
         out.append({"name": a, "in": "body", "required": False})
+    for a in getattr(entry, "query_keys", ()):
+        out.append({"name": a, "in": "query", "required": False})
     return out
 
 
@@ -108,13 +111,16 @@ def _do_search_tools(
         limit = 10
     limit = max(1, min(limit, _MAX_SEARCH_LIMIT))
 
-    # Single pass: pull all matches (no visibility filter), tag each with
-    # callable_now in one walk. Visible entries appear first so the LLM
-    # sees them; non-visible ones are kept for discoverability ("here's
-    # what exists, connect to use it").
+    # Pull the FULL ranked match set (no visibility filter, no premature
+    # truncation), tag each with callable_now, then reorder visible-first and
+    # only THEN apply the final limit. Truncating before the visibility
+    # reorder could drop a callable entry that ranked just outside the window
+    # in favour of non-visible ones. The allowlist is small so fetching all
+    # matches is cheap. Non-visible entries are kept for discoverability
+    # ("here's what exists, connect to use it").
     all_matches = search_dispatch_entries(
         query=query, category=category, connector=connector,
-        user_id=None, limit=limit * 2,
+        user_id=None, limit=len(DISPATCH_ALLOWLIST),
     )
     annotated = [(e, dispatch_entry_visible(e, user_id)) for e in all_matches]
     ordered = (
@@ -127,8 +133,13 @@ def _do_search_tools(
             "tools": [_shape_entry(e, c) for e, c in ordered],
             "total_matches": len(ordered),
             "hint": (
-                "Call_tool requires a tool whose `callable_now` is true. "
-                "Connect the integration in Aurora to enable the rest."
+                "Aurora exposes many more tools than the few shown upfront — "
+                "logs, metrics, deployments (Jenkins/CloudBees/Spinnaker), "
+                "Jira, GitHub, Sentry, Grafana, postmortems, actions/automations, "
+                "and DORA metrics (MTTR/MTTD/CFR). Search here before assuming a "
+                "capability is missing. "
+                "call_tool requires a tool whose `callable_now` is true; connect "
+                "the integration in Aurora to enable the rest."
             ),
         },
         tool_name="search_tools",
@@ -196,13 +207,22 @@ def register_dispatch_tools(
         connector: Optional[str] = None,
         limit: int = 10,
     ) -> Dict[str, Any]:
-        """Discover tools beyond the always-visible set. Use this when the user
-        asks for something a top-level tool doesn't cover.
+        """Discover the many tools Aurora exposes beyond the few shown upfront.
+        Call this BEFORE assuming a capability is missing. Searchable families
+        include logs, metrics,
+        deployments (Jenkins/CloudBees/Spinnaker), Jira, GitHub, Sentry, Grafana,
+        Bitbucket, Notion, Confluence/SharePoint runbooks, postmortems,
+        actions/automations, and DORA metrics (MTTR/MTTD/CFR/incident frequency).
+        Then invoke a result with call_tool.
 
         Args:
-          query: free-text search over tool name and description (optional).
-          category: filter to a category (e.g. "logs", "ticketing", "code").
-          connector: filter to entries gated by a specific skill (e.g. "jira").
+          query: free-text search over tool name and description, e.g.
+            "infrastructure topology", "postmortem", "mttr dora", "rca tools
+            steps", "recent deployments" (optional — tokenized, any word matches).
+          category: filter to a category (e.g. "logs", "metrics", "cicd",
+            "ticketing", "code", "monitoring", "alerts", "incidents").
+          connector: filter to entries gated by a specific skill (e.g. "jira",
+            "sentry", "grafana", "spinnaker").
           limit: max results (default 10).
 
         Results that need a connector you haven't connected appear as "not

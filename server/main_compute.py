@@ -11,6 +11,7 @@ load_dotenv()
 
 import logging
 import os
+import sys
 import hmac
 import secrets
 from flask import Flask, request, jsonify
@@ -19,8 +20,17 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 from utils.db.db_utils import ensure_database_exists, initialize_tables
 from utils.log_sanitizer import sanitize
 
-# Configure logging first, before importing any modules
-logging.basicConfig(level=logging.DEBUG, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+# Configure logging first, before importing any modules.
+#
+# IMPORTANT: sys.stdout must be passed explicitly to StreamHandler.
+# The default (no argument) routes to sys.stderr, which causes GCP
+# Cloud Logging to classify ALL log lines — including INFO/DEBUG — as
+# ERROR severity, generating false-positive error-log-spike alerts (INC-445).
+logging.basicConfig(
+    level=logging.DEBUG,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    handlers=[logging.StreamHandler(sys.stdout)],
+)
 # Silence verbose loggers
 logging.getLogger('werkzeug').setLevel(logging.INFO)
 logging.getLogger('utils.auth.stateless_auth').setLevel(logging.INFO)
@@ -140,6 +150,10 @@ CORS(app, origins=FRONTEND_URL, supports_credentials=True,
                               "allow_headers": ["Content-Type", "X-Provider", "X-Requested-With", "X-User-ID",
                                                 "Authorization", "X-Provider-Preference"],
                               "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"]},
+       r"/flyio_api/*": {"origins": FRONTEND_URL, "supports_credentials": True,
+                         "allow_headers": ["Content-Type", "X-Provider", "X-Requested-With", "X-User-ID",
+                                           "Authorization", "X-Provider-Preference"],
+                         "methods": ["GET", "POST", "DELETE", "OPTIONS"]},
         r"/api/ssh-keys*": {"origins": FRONTEND_URL, "supports_credentials": True,
                             "allow_headers": ["Content-Type", "X-Provider", "X-Requested-With", "X-User-ID",
                                               "Authorization", "X-Provider-Preference"],
@@ -357,6 +371,10 @@ app.register_blueprint(gitlab_bp, url_prefix="/gitlab")
 from routes.kubectl_token_routes import kubectl_token_bp
 app.register_blueprint(kubectl_token_bp)
 
+# --- Kubeconfig Upload Routes ---
+from routes.kubeconfig.kubeconfig_routes import kubeconfig_bp
+app.register_blueprint(kubeconfig_bp)
+
 # --- MCP API Token Routes ---
 from routes.mcp_token_routes import mcp_token_bp
 app.register_blueprint(mcp_token_bp)
@@ -509,6 +527,9 @@ app.register_blueprint(actions_bp, url_prefix="/api/actions")
 from routes.postmortem_routes import postmortem_bp
 app.register_blueprint(postmortem_bp)
 
+from routes.artifact_routes import artifact_bp
+app.register_blueprint(artifact_bp)
+
 # --- SRE Metrics Routes ---
 from routes.metrics_routes import metrics_bp
 app.register_blueprint(metrics_bp)
@@ -597,6 +618,10 @@ app.register_blueprint(tailscale_bp, url_prefix="/tailscale_api")
 # --- Cloudflare Routes ---
 from routes.cloudflare import cloudflare_bp
 app.register_blueprint(cloudflare_bp, url_prefix="/cloudflare_api")
+
+# --- Fly.io Routes ---
+from routes.flyio import flyio_bp
+app.register_blueprint(flyio_bp, url_prefix="/flyio_api")
 
 from routes.terraform import terraform_workspace_bp
 app.register_blueprint(terraform_workspace_bp)

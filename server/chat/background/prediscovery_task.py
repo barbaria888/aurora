@@ -140,6 +140,7 @@ These are indexed separately for semantic search during incident response.
 5. **CI/CD** (if Jenkins/Spinnaker/CloudBees connected):
    - jenkins_rca(action='recent_deployments') or cloudbees_rca/spinnaker_rca to see what gets deployed where
    - For each deployment: what repo, what target environment, what K8s cluster/namespace
+   - If CloudBees Operations Center is connected: use cloudbees_rca(action='controller_list') to discover all managed controllers, then cloudbees_rca(action='cross_controller_deployments') to see what's deploying across the organization
 
 6. **Observability** (if Datadog/Splunk/Coroot/Dynatrace/ThousandEyes connected):
    - Datadog: query_datadog(resource_type='monitors') and query_datadog(resource_type='hosts')
@@ -200,6 +201,17 @@ def run_prediscovery(
 
     logger.info(f"[Prediscovery] Starting for user {user_id} (trigger={trigger})")
 
+    from utils.auth.stateless_auth import get_org_id_for_user
+    from datetime import datetime, timezone
+    org_id = get_org_id_for_user(user_id)
+
+    # Hook: check if LLM call is allowed
+    from utils.hooks import get_hook
+    hook_allowed, hook_message = get_hook("before_llm_call")(org_id, user_id)
+    if not hook_allowed:
+        logger.warning(f"[Prediscovery] Hook blocked for user {user_id}: {hook_message}")
+        return {"status": "hook_blocked", "error": hook_message}
+
     try:
         providers = get_user_providers(user_id)
         integrations = _get_connected_integrations(user_id)
@@ -208,10 +220,6 @@ def run_prediscovery(
         if connected_count == 0:
             logger.info(f"[Prediscovery] No integrations for user {user_id}, skipping")
             return {"status": "skipped", "reason": "no_integrations"}
-
-        from utils.auth.stateless_auth import get_org_id_for_user
-        from datetime import datetime, timezone
-        org_id = get_org_id_for_user(user_id)
         run_started_at = datetime.now(timezone.utc).isoformat()
 
         prompt = build_prediscovery_prompt(user_id, providers, integrations)

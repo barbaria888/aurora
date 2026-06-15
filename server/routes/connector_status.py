@@ -270,9 +270,18 @@ def _check_google_chat(creds: Dict[str, Any]) -> Dict[str, Any]:
         return {"connected": False}
 
 
-def _check_github(user_id: str, app_runtime_ready: bool) -> Dict[str, Any]:
-    """Mirrors /github/status — App-aware AND OAuth-aware (hybrid mode)."""
+def _check_github(creds_or_user_id, app_runtime_ready: bool = True) -> Dict[str, Any]:
+    """Mirrors /github/status — App-aware AND OAuth-aware (hybrid mode).
+
+    Accepts either a credentials dict (with ``_user_id``) for generic
+    PROVIDER_CHECKERS dispatch, or a plain user_id string for direct callers.
+    """
     from utils.auth.github_auth_mode import is_app_enabled, is_oauth_enabled
+
+    if isinstance(creds_or_user_id, dict):
+        user_id = creds_or_user_id.get("_user_id", "")
+    else:
+        user_id = creds_or_user_id
 
     if is_app_enabled() and app_runtime_ready:
         try:
@@ -891,6 +900,14 @@ def _check_all_connectors(
                 logger.warning("[STATUS] %s check timed out: %s", prov, exc)
                 results[prov] = {"connected": False}
 
+    # CloudBees OC/PAT (cloudbees_oc) and FM (cloudbees_fm) are stored as separate
+    # providers but surface under the single "cloudbees" connector card in the UI.
+    if not results.get("cloudbees", {}).get("connected") and (
+        results.get("cloudbees_oc", {}).get("connected")
+        or results.get("cloudbees_fm", {}).get("connected")
+    ):
+        results["cloudbees"] = {"connected": True}
+
     return results
 
 
@@ -917,12 +934,16 @@ def _check_kubectl(user_id: str, org_id: str) -> Dict[str, Any]:
         with db_pool.get_admin_connection() as conn:
             with conn.cursor() as cursor:
                 set_rls_context(cursor, conn, user_id, log_prefix=_LOG_PREFIX)
-                cursor.execute(
-                    """SELECT COUNT(*) FROM active_kubectl_connections ac
-                       JOIN kubectl_agent_tokens kat ON ac.token = kat.token
-                       WHERE (kat.user_id = %s OR kat.org_id = %s) AND ac.status = 'active'""",
-                    (user_id, org_id),
-                )
+                cursor.execute("""
+                    SELECT COUNT(*) FROM (
+                        SELECT 1 FROM active_kubectl_connections ac
+                            JOIN kubectl_agent_tokens kat ON ac.token = kat.token
+                            WHERE (kat.user_id = %s OR kat.org_id = %s) AND ac.status = 'active'
+                        UNION ALL
+                        SELECT 1 FROM kubeconfig_clusters
+                            WHERE org_id = %s AND is_active = TRUE
+                    ) combined
+                """, (user_id, org_id, org_id))
                 count = cursor.fetchone()[0]
         return {"connected": count > 0}
     except Exception as e:

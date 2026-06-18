@@ -355,8 +355,8 @@ class Agent:
             tools = get_cloud_tools()
             if tool_subset is not None:
                 tools = tool_subset
-            
-            
+
+
             prompt_text = ''
             if state.messages and hasattr(state.messages[-1], 'content'):
                 # Handle both string and multimodal content

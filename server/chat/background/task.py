@@ -1355,6 +1355,8 @@ async def _execute_background_chat(
 
         # Create state with is_background=True and rca_context for system prompt
         # Use centralized model configuration for RCA with provider mode awareness
+        _is_pr_review = _tm_source == "change_gating"
+
         state = State(
             user_id=user_id,
             session_id=session_id,
@@ -1368,6 +1370,7 @@ async def _execute_background_chat(
             mode=mode,
             is_background=True,
             is_postmortem_action=_is_postmortem_action,
+            is_pr_review=_is_pr_review,
             rca_context=rca_context,
             permitted_tools=_resolve_permitted_tools(user_id),
         )
